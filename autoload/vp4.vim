@@ -91,6 +91,9 @@ function! s:PerforceSystem(cmd)
 	if ! has('win64') && ! has('win32')
 		let &shell=prev
 	endif
+    if g:perforce_debug
+        echom "DBG sys: " . command . " out:" . retval
+    endif
     return retval
 endfunction
 
@@ -121,7 +124,7 @@ endfunction
 " Function to get the path of the file
 function! s:ExpandPath(file)
     if exists("g:vp4_base_path_replacements")
-        if g:perforce_debug	
+        if g:perforce_debug
             echom "We have a base path replacements"
         endif
         let l:oldPath = expand('%:p')
@@ -744,6 +747,49 @@ function! vp4#PerforceAnnotate(...) range
     execute bufwinnr(saved_bufnr) . "wincmd w"
     set cursorbind scrollbind
     syncbind
+endfunction
+
+function! vp4#PerforceAnnotateLine()
+    let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
+    if !s:PerforceAssertExists(filename) | return | endif
+
+    " use -i flag to follow branch
+    let perforce_command = 'annotate -icq ' . shellescape(filename, 0)
+    let perforce_command .= '| sed -e "' . line(".") . 'q;d"'
+    let perforce_command .= '| cut -d: -f1'
+    let changes = split(s:PerforceSystem(perforce_command), '\n')
+    if v:shell_error || len(changes) == 0
+        if g:perforce_debug
+            echom 'file:' . filename . 'no changes'
+        endif
+        return
+    endif
+
+    if g:perforce_debug
+        echom 'file:' . filename . ', change:' . changes[0]
+    endif
+
+    let lines = []
+    " The change may be inherited so we include %path% here.
+    let perforce_command = '-Ztag -F "change#%change% %path% %user%@%client% '
+                \ . '%time% %desc%" describe -s -m1 '
+    let output = s:PerforceSystem(perforce_command . changes[0])
+    if v:shell_error || len(output) == 0
+        call s:EchoError('file:' . filename . ' describe error')
+        return
+    endif
+
+    let fields = split(trim(output), ' ')
+    let fields[3] = strftime("%Y%m%d %T", fields[3])
+    let entry = { 'filename':filename, 'lnum':line("."),'text':join(fields) }
+
+    " Populate the location list
+    call setloclist(0, [entry])
+
+    " Automatically open quick-fix or location list
+    if g:vp4_open_loclist
+        lopen
+    endif
 endfunction
 
 " Populate the quick-fix or location list with the past revisions of this file.
