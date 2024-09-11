@@ -3,7 +3,7 @@
 " Last Change:  Nov 22, 2016
 " Author:       Emily Ng
 
-" {{{ Explorer global data structures
+"  Explorer global data structures
 " directory object data
 " dir_data = {
 "   '<full path name>' : {
@@ -30,11 +30,11 @@ let s:line_map = {}
 
 " depot directory to local directory map
 let s:directory_map = {}
-" }}}
+"
 
-" {{{ Helper functions
+"  Helper functions
 
-" {{{ Generic Helper functions
+"  Generic Helper functions
 function! s:BufferIsEmpty()
     return line('$') == 1 && getline(1) == ''
 endfunction
@@ -72,9 +72,9 @@ function! s:GoToWindowForBufferName(name)
     endif
 endfunction
 
-" }}}
+"
 
-" {{{ Perforce system functions
+"  Perforce system functions
 " Return result of calling p4 command
 function! s:PerforceSystem(cmd)
 	if has('win64') || has('win32')
@@ -156,9 +156,9 @@ function! s:ExpandPath(file)
         return expand(a:file)
     endif
 endfunction
-" }}}
+"
 
-" {{{ Perforce checker infrastructure
+"  Perforce checker infrastructure
 " Returns the value of a fstat field
     " Throws an error if it failed.  It is up to the *caller* to catch the error
     " and issue an appropriate message.
@@ -210,9 +210,9 @@ function! s:PerforceQuery(field, filename)
     endtry
     return retval
 endfunction
-" }}}
+"
 
-" {{{ Perforce field checkers
+"  Perforce field checkers
 
 " Tests for existence in depot.  Issues error message upon failure.
     " Can be used to test existence of a specific revision, or shelved in a
@@ -291,9 +291,9 @@ endfunction
 function! s:PerforceHaveRevision(filename)
     return s:PerforceQuery('haveRev', a:filename)
 endfunction
-" }}}
+"
 
-" {{{ Perforce revision specification helpers
+"  Perforce revision specification helpers
 " Return filename with any revision specifier stripped
 function! s:PerforceStripRevision(filename)
     return split(a:filename, '#')[0]
@@ -335,12 +335,12 @@ function! s:PerforceAddPrevRevision(filename)
         return a:filename . '#' . prev_rev
     endif
 endfunction
-" }}}
-" }}}
+"
+"
 
-" {{{ Main functions
+"  Main functions
 
-" {{{ System
+"  System
 function! vp4#PerforceSystemWr(...)
     let cmd = join(map(copy(a:000), 'expand(v:val)'))
 
@@ -356,9 +356,9 @@ function! vp4#PerforceSystemWr(...)
     " return to original windown
     wincmd p
 endfunction
-" }}}
+"
 
-" {{{ File editing
+"  File editing
 " Call p4 add.
 function! vp4#PerforceAdd()
     let filename = s:ExpandPath('%')
@@ -392,6 +392,9 @@ function! vp4#PerforceEdit()
 
     " reload the file to refresh &readonly attribute
     execute 'edit ' filename
+
+    " Sometimes vim doesn't refresh the state correctly.
+    setlocal modifiable
 endfunction
 
 " Call p4 revert.  Confirms before performing the revert.
@@ -412,9 +415,9 @@ function! vp4#PerforceRevert(bang)
     " reload the file to refresh &readonly attribute
     execute 'edit ' filename
 endfunction
-" }}}
+"
 
-" {{{ Change specification
+"  Change specification
 " Call p4 shelve
 function! vp4#PerforceShelve(bang)
     let filename = s:ExpandPath('%')
@@ -549,9 +552,9 @@ function! vp4#PerforceReopen()
     let perforce_command = 'reopen -c ' . change_number . ' ' . filename
     call s:PerforceSystem(perforce_command)
 endfunction
-" }}}
+"
 
-" {{{ Analysis
+"  Analysis
 " Open repository revision in diff mode
     "  Options:
     "  s       diffs with shelved in file's current changelist
@@ -793,15 +796,10 @@ function! vp4#PerforceAnnotateLine()
 endfunction
 
 " Populate the quick-fix or location list with the past revisions of this file.
-    " Only lists the files and some changelist data.  The file is not retrieved
+    " Only lists the files and some changelist data. The file is not retrieved
     " until the user opens it.
 function! vp4#PerforceFilelog(...)
-    let max_history = g:vp4_filelog_max
-    if a:0 > 0
-        let max_history = a:1
-    endif
-
-    let filename = s:PerforceStripRevision(s:ExpandPath('%'))
+    let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
     if !s:PerforceAssertExists(filename) | return | endif
 
     " Remember some stuff about this file
@@ -809,31 +807,34 @@ function! vp4#PerforceFilelog(...)
     let g:_vp4_curpos = getcurpos()
 
     " Set up the command.  Limit the maximum number of entries.
-    let command = 'filelog'
-    if g:vp4_filelog_max > 0
-        let command .= ' ' . '-m ' . max_history
-    endif
-    let command .= ' ' . filename
+    let command = '-Mj -Ztag filelog -hils ' . filename
 
     " Compile all the location list data
     let data = []
     for line in split(s:PerforceSystem(command), '\n')
-        let fields = split(line, '\s')
-
-        " Cheap way to filter out irrelevant lines such as just the filename
-        " (which is the first line), or 'branch into' lines
-        if len(fields) < 8
-            continue
-        endif
-
-        " Set up dictionary entry
-        let entry = {}
-        let entry['filename'] = filename . fields[1]
-        let entry['lnum'] = g:_vp4_curpos[1]
-        let entry['text'] = join(fields[2:-1])
-
-        " Add it to the list
-        call add(data, entry)
+        let dict = json_decode(line)
+        let depotFile = dict["depotFile"]
+        let i = 0
+        while i < 1000000
+            let action = 'action' . i
+            if !has_key(dict, action)
+                break
+            endif
+            let user = dict['user' . i]
+            let change = dict['change' . i]
+            let desc = trim(dict['desc' . i])
+            let client = dict['client' . i]
+            let time = strftime("[%Y/%m/%d %T]", dict['time' . i])
+            let rev = dict['rev' . i]
+            " Set up dictionary entry
+            let entry = {}
+            let entry['filename'] = depotFile . '#' . rev
+            let entry['lnum'] = g:_vp4_curpos[1]
+            let entry['text'] = printf("%s %s %s %s %s", change, dict[action], time, user, desc)
+            " Add it to the list
+            call add(data, entry)
+            let i += 1
+        endwhile
     endfor
 
     " Populate the location list
@@ -850,13 +851,16 @@ function! vp4#PerforceFilelog(...)
         autocmd BufEnter *#* call <SID>PerforceOpenRevision()
     augroup END
 endfunction
-" }}}
+"
 
-" {{{ Passive (called by auto commands)
+"  Passive (called by auto commands)
 " Check if file exists in the depot and is not already opened for edit.  If so,
 " prompt user to open for edit.
 function! vp4#PromptForOpen()
     let filename = s:ExpandPath('%')
+    if !g:vp4_prompt_on_write
+        return
+    endif
     if &readonly && s:PerforceAssertExists(filename)
         let do_edit = input(filename .
                 \' is not opened for edit.  p4 edit it now? [y/n]: ')
@@ -950,9 +954,9 @@ function! vp4#CheckServerPath(filename)
 
 endfunction
 
-" }}}
+"
 
-" {{{ Depot explorer
+"  Depot explorer
 
 " Print file contents to temporary buffer for viewing without syncing
 function! s:ExplorerPreviewOrOpen()
@@ -1224,7 +1228,7 @@ function! vp4#PerforceExplore(...)
     hi def link Vp4Dir Identifier
     hi def link Vp4Rev Comment
 endfunction
-" }}}
-" }}}
+"
+"
 
 " vim: foldenable foldmethod=marker
