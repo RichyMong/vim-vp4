@@ -335,6 +335,48 @@ function! s:PerforceAddPrevRevision(filename)
         return a:filename . '#' . prev_rev
     endif
 endfunction
+
+" Get the pending changelists of the current user and prompt the user to
+" choose one
+function! s:PerforcePromptChangelist(prompt, with_default, ...)
+    " Get the pending changes in the current client
+    let command = "-Ztag -Mj changes -u $USER -s pending -l"
+
+    let changes = []
+    for line in split(s:PerforceSystem(command), '\n')
+        let change = json_decode(line)
+        if a:0 > 0 && index(a:000, change['change']) >= 0
+            continue
+        endif
+        let change['desc'] = trim(change['desc'])
+        let change['time'] = strftime("[%Y/%m/%d %T]", change['time'])
+        call add(changes, change)
+    endfor
+    if len(changes) > 0
+        if len(changes) == 1 && !a:with_default
+            return changes[0]["change"]
+        endif
+        " Prepend with choice numbers, starting at 1
+        call map(changes, 'v:key + 1 . ". " . v:val["change"] . " " . v:val["time"] . " " . v:val["desc"]')
+
+        if a:with_default
+            call add(changes, len(changes) + 1 . '. default')
+        endif
+
+        " Prompt the user
+        echom a:prompt
+        let change = inputlist(changes)
+
+        " From the user's input, get the actual changelist number
+        if !change | return "" | endif
+        let change_number = split(changes[change - 1], ' ')[1]
+        return change_number
+    elseif a:with_default
+        return 'default'
+    else
+        echom "No pending changelist found"
+    endif
+endfunction
 "
 "
 
@@ -363,7 +405,13 @@ endfunction
 function! vp4#PerforceAdd()
     let filename = s:ExpandPath('%')
 
-    call s:PerforceSystem('add ' .filename)
+    if !s:PerforceAssertExists(filename) | return | endif
+
+    let changelist = s:PerforcePromptChangelist("Select a changelist to add " . filename, 1)
+
+    if changelist
+        call s:PerforceSystem('add -c ' . changelist . ' ' . filename)
+    endif
 endfunction
 
 " Call p4 delete.
@@ -387,8 +435,19 @@ endfunction
 function! vp4#PerforceEdit()
     let filename = s:ExpandPath('%')
     if !s:PerforceAssertExists(filename) | return | endif
+    let cl = s:PerforceGetCurrentChangelist(filename)
+    if cl != 0
+        echom filename . ' is already opened in changelist "' . cl . '"'
+        return
+    endif
 
-    call s:PerforceSystem('edit ' .filename)
+    let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
+
+    if g:perforce_debug
+        echom "chose changelist " . changelist
+    endif
+
+    call s:PerforceSystem('edit -c ' . changelist . ' ' . filename)
 
     " reload the file to refresh &readonly attribute
     execute 'edit ' filename
@@ -529,27 +588,20 @@ function! vp4#PerforceReopen()
     let filename = s:ExpandPath('%')
     if !s:PerforceAssertOpened(filename) | return | endif
 
-    " Get the pending changes in the current client
-    let perforce_command = "changes -u $USER -s pending -c $P4CLIENT"
-    let changes = split(s:PerforceSystem(perforce_command), '\n')
-
-    " Prepend with choice numbers, starting at 1
-    call map(changes, 'v:key + 1 . ". " . v:val')
-
     " Prompt the user
     let currentchangelist = s:PerforceGetCurrentChangelist(filename)
-    echom filename . ' is currently open in change "' . currentchangelist
-            \ . '" Select a changelist to move to: '
-    let change = inputlist(changes + [len(changes) + 1 . '. default'])
 
-    " From the user's input, get the actual changelist number
-    if !change | return | endif
-    let change_number = change > len(changes) ? 'default'
-            \ : split(changes[change - 1], ' ')[2]
-    echom 'Moving ' . filename . ' to change ' . change_number
+    let changelist = s:PerforcePromptChangelist(filename .
+        \ ' is currently open in change "' . currentchangelist
+        \ . '". Select a changelist to move to: ',
+        \ currentchangelist != "default", currentchangelist)
+
+    if changelist
+        echom '\nMoving ' . filename . ' to change ' . changelist
+    endif
 
     " Perform the reopen command
-    let perforce_command = 'reopen -c ' . change_number . ' ' . filename
+    let perforce_command = 'reopen -c ' . changelist . ' ' . filename
     call s:PerforceSystem(perforce_command)
 endfunction
 "

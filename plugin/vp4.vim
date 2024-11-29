@@ -40,6 +40,7 @@ call s:set('g:_vp4_filetype', 'txt')
 call s:set('g:vp4_allow_open_depot_file', 1)
 call s:set('g:vp4_sync_options', '')
 call s:set('g:vp4_base_path_replacements', {})
+call s:set('g:vp4_disable_default_changelist', 0)
 
 " }}}
 
