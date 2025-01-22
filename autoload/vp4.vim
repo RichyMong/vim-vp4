@@ -72,7 +72,29 @@ function! s:GoToWindowForBufferName(name)
     endif
 endfunction
 
-"
+" Perforce system functions with verbose information
+" Return a dictionary with the output and exit code
+function! s:PerforceSystemVerbose(cmd)
+	if has('win64') || has('win32')
+		let command = g:vp4_perforce_executable . " " . a:cmd . " 2> NUL"
+	else
+		let prev = &shell
+		set shell=sh
+		let command = g:vp4_perforce_executable . " " . a:cmd . " 2>&1"
+	endif
+    if g:perforce_debug
+        echom "DBG sys: " . command
+    endif
+    let output = system(command)
+    let exit_code = v:shell_error
+	if ! has('win64') && ! has('win32')
+		let &shell=prev
+	endif
+    if g:perforce_debug
+        echom "DBG sys: " . command . " exit_code:" . exit_code . " output:" . output
+    endif
+    return { 'output': output, 'exit_code': exit_code }
+endfunction
 
 "  Perforce system functions
 " Return result of calling p4 command
@@ -405,10 +427,14 @@ endfunction
 function! vp4#PerforceAdd()
     let filename = s:ExpandPath('%')
 
-    if !s:PerforceAssertExists(filename) | return | endif
+    try
+        let retval = s:PerforceFstat('headRev', filename)
+        call s:EchoError(a:filename . ' already exists on the server: ' . retval)
+        return
+    catch /PerforceFstatError/
+    endtry
 
     let changelist = s:PerforcePromptChangelist("Select a changelist to add " . filename, 1)
-
     if changelist
         call s:PerforceSystem('add -c ' . changelist . ' ' . filename)
     endif
@@ -447,13 +473,17 @@ function! vp4#PerforceEdit()
         echom "chose changelist " . changelist
     endif
 
-    call s:PerforceSystem('edit -c ' . changelist . ' ' . filename)
-
-    " reload the file to refresh &readonly attribute
-    execute 'edit ' filename
-
-    " Sometimes vim doesn't refresh the state correctly.
-    setlocal modifiable
+    let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . filename)
+    if result['exit_code'] == 0
+        let saved_curpos = getcurpos()
+        " reload the file to refresh &readonly attribute
+        execute 'edit ' filename
+        call setpos('.', saved_curpos)
+        " Sometimes vim doesn't refresh the state correctly.
+        setlocal modifiable noreadonly
+    else
+        echow result['output']
+    endif
 endfunction
 
 " Call p4 revert.  Confirms before performing the revert.
@@ -468,11 +498,15 @@ function! vp4#PerforceRevert(bang)
 
     if a:bang || do_revert ==? 'y'
         call s:PerforceSystem('revert ' .filename)
-        set nomodified
+        setlocal nomodifiable
+        setlocal nomodified
+        setlocal readonly
     endif
 
     " reload the file to refresh &readonly attribute
     execute 'edit ' filename
+    setlocal nomodifiable
+    setlocal readonly
 endfunction
 "
 
@@ -597,7 +631,7 @@ function! vp4#PerforceReopen()
         \ currentchangelist != "default", currentchangelist)
 
     if changelist
-        echom '\nMoving ' . filename . ' to change ' . changelist
+        echom 'Moving ' . filename . ' to change ' . changelist
     endif
 
     " Perform the reopen command
@@ -918,7 +952,7 @@ function! vp4#PromptForOpen()
                 \' is not opened for edit.  p4 edit it now? [y/n]: ')
         if do_edit ==? 'y'
             setlocal autoread
-            call s:PerforceSystem('edit ' .filename)
+            call vp4#PerforceEdit()
         endif
     endif
 endfunction
