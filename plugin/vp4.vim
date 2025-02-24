@@ -41,6 +41,7 @@ call s:set('g:vp4_allow_open_depot_file', 1)
 call s:set('g:vp4_sync_options', '')
 call s:set('g:vp4_base_path_replacements', {})
 call s:set('g:vp4_disable_default_changelist', 0)
+call s:set('g:_vp4_client', '')
 
 " }}}
 
@@ -69,6 +70,7 @@ command! -bang Vp4Revert call vp4#PerforceRevert(<bang>0)
 command! -bang Vp4Delete call vp4#PerforceDelete(<bang>0)
 command! Vp4Reopen call vp4#PerforceReopen()
 command! Vp4Edit call vp4#PerforceEdit()
+command! Vp4QuickfixEdit call vp4#PerforceEditFilesInQuickFixList()
 command! Vp4Add call vp4#PerforceAdd()
 command! Vp4AnnotateLine call vp4#PerforceAnnotateLine()
 command! -bang Vp4Shelve call vp4#PerforceShelve(<bang>0)

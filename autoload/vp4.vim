@@ -34,6 +34,15 @@ let s:directory_map = {}
 
 "  Helper functions
 
+function! s:GetClientName()
+    if g:_vp4_client == ''
+        let l:text = s:PerforceSystem('-Mj -ztag info')
+        let l:dict = json_decode(l:text)
+        let g:_vp4_client = l:dict["clientName"]
+    endif
+    return g:_vp4_client
+endfunction
+
 "  Generic Helper functions
 function! s:BufferIsEmpty()
     return line('$') == 1 && getline(1) == ''
@@ -98,23 +107,29 @@ endfunction
 
 "  Perforce system functions
 " Return result of calling p4 command
-function! s:PerforceSystem(cmd)
+" a:1 if restrict the command in the current workspace
+function! s:PerforceSystem(cmd, ...)
+    let l:p4cmd = g:vp4_perforce_executable
+    if a:0 && a:1
+		let l:p4cmd = l:p4cmd . " -c " . s:GetClientName()
+    endif
+    let l:p4cmd = l:p4cmd . " " . a:cmd
 	if has('win64') || has('win32')
-		let command = g:vp4_perforce_executable . " " . a:cmd . " 2> NUL"
+		let l:p4cmd = l:p4cmd . " 2> NUL"
 	else
 		let prev = &shell
 		set shell=sh
-		let command = g:vp4_perforce_executable . " " . a:cmd . " 2> /dev/null"
+		let l:p4cmd = l:p4cmd . " 2> /dev/null"
 	endif
     if g:perforce_debug
-        echom "DBG sys: " . command
+        echom "DBG sys: " . l:p4cmd
     endif
-    let retval = system(command)
+    let retval = system(l:p4cmd)
 	if ! has('win64') && ! has('win32')
 		let &shell=prev
 	endif
     if g:perforce_debug
-        echom "DBG sys: " . command . " out:" . retval
+        echom "DBG sys: " . l:p4cmd . " out:" . retval
     endif
     return retval
 endfunction
@@ -191,25 +206,23 @@ function! s:PerforceFstat(field, filename)
     "   3. not shelved in changelist
     " It always starts a valid line with '...'; use it to validate response.
     " It does return -1 if an invalid field was requested.
-    let s = s:PerforceSystem('fstat -T ' . a:field . ' ' . a:filename)
-    if v:shell_error || matchstr(s, '\.\.\.') == ''
-        if matchstr(s, 'P4PASSWD') != ''
-            call s:EchoError(split(s, '\n')[0])
-            return 0
-        else
-            throw 'PerforceFstatError'
+    let val = s:PerforceSystem('-ztag -F%' . a:field . '% fstat ' . a:filename)
+    let val = trim(val)
+    if v:shell_error == 0 && val != ''
+        if g:perforce_debug
+            echom 'fstat got value ' . val . ' for field ' . a:field
+                    \ . ' on file ' . a:filename
         endif
+        return val
     endif
 
-    " Extract the value from the string which looks like:
-    "   ... headRev 65\n\n
-    let val = split(split(substitute(s, '\r', '', ''), '\n')[0])[2]
-    if g:perforce_debug
-        echom 'fstat got value ' . val . ' for field ' . a:field
-                \ . ' on file ' . a:filename
+    if val == ''
+        throw 'PerforceFstatError'
     endif
-
-    return val
+    if matchstr(val, 'P4PASSWD') != ''
+        call s:EchoError(split(val, '\n')[0])
+        return 0
+    endif
 endfunction
 
 " Assert fstat field
@@ -362,7 +375,7 @@ endfunction
 " choose one
 function! s:PerforcePromptChangelist(prompt, with_default, ...)
     " Get the pending changes in the current client
-    let command = "-Ztag -Mj changes -u $USER -s pending -l"
+    let command = "-Ztag -Mj changes -u $USER -s pending -l -c ". s:GetClientName()
 
     let changes = []
     for line in split(s:PerforceSystem(command), '\n')
@@ -388,6 +401,10 @@ function! s:PerforcePromptChangelist(prompt, with_default, ...)
         " Prompt the user
         echom a:prompt
         let change = inputlist(changes)
+
+        if g:perforce_debug
+            echom "select input is [" . change . "]"
+        endif
 
         " From the user's input, get the actual changelist number
         if !change | return "" | endif
@@ -482,6 +499,50 @@ function! vp4#PerforceEdit()
         " Sometimes vim doesn't refresh the state correctly.
         setlocal modifiable noreadonly
     else
+        echow result['output']
+    endif
+endfunction
+
+function! vp4#PerforceEditFilesInQuickFixList()
+    let l:unopened_files = []
+
+    let l:qflist = getqflist()
+    let l:files = l:qflist->map({_,val -> fnamemodify(bufname(val.bufnr), ':p')})->sort()->uniq()
+    if g:perforce_debug
+        echom len(getqflist()) . ' items and ' . len(l:files) .
+               \' unique files in quickfix list'
+    endif
+
+    for filename in l:files
+        if !s:PerforceAssertExists(filename) | continue | endif
+        let cl = s:PerforceGetCurrentChangelist(filename)
+        if g:perforce_debug
+            echom filename . ' got "' . cl . '"'
+        endif
+        if cl == "default" || cl != 0
+            if g:perforce_debug
+                echom filename . ' is already opened in changelist "' . cl . '"'
+            endif
+            continue
+        endif
+        let l:unopened_files += [filename]
+    endfor
+
+    if len(l:unopened_files) == 0
+        return
+    endif
+
+    if g:perforce_debug
+        echom 'unopened files"' . l:unopened_files . '"'
+    endif
+
+    let changelist = s:PerforcePromptChangelist("Select a changelist to open the files", 1)
+    if g:perforce_debug
+        echom "chose changelist " . changelist
+    endif
+
+    let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . join(l:unopened_files, ' '))
+    if result['exit_code'] != 0
         echow result['output']
     endif
 endfunction
