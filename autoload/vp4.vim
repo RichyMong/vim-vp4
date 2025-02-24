@@ -485,9 +485,12 @@ function! vp4#PerforceEdit()
     endif
 
     let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
-
     if g:perforce_debug
         echom "chose changelist " . changelist
+    endif
+
+    if !changelist
+        return
     endif
 
     let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . filename)
@@ -541,9 +544,11 @@ function! vp4#PerforceEditFilesInQuickFixList()
         echom "chose changelist " . changelist
     endif
 
-    let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . join(l:unopened_files, ' '))
-    if result['exit_code'] != 0
-        echow result['output']
+    if changelist
+        let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . join(l:unopened_files, ' '))
+        if result['exit_code'] != 0
+            echow result['output']
+        endif
     endif
 endfunction
 
@@ -693,11 +698,10 @@ function! vp4#PerforceReopen()
 
     if changelist
         echom 'Moving ' . filename . ' to change ' . changelist
+        " Perform the reopen command
+        let perforce_command = 'reopen -c ' . changelist . ' ' . filename
+        call s:PerforceSystem(perforce_command)
     endif
-
-    " Perform the reopen command
-    let perforce_command = 'reopen -c ' . changelist . ' ' . filename
-    call s:PerforceSystem(perforce_command)
 endfunction
 "
 
