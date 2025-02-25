@@ -489,7 +489,10 @@ function! vp4#PerforceEdit()
         echom "chose changelist " . changelist
     endif
 
-    if !changelist
+    if changelist == ''
+        if g:perforce_debug
+            echom "empty changelist"
+        endif
         return
     endif
 
@@ -544,7 +547,7 @@ function! vp4#PerforceEditFilesInQuickFixList()
         echom "chose changelist " . changelist
     endif
 
-    if changelist
+    if changelist != ''
         let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . join(l:unopened_files, ' '))
         if result['exit_code'] != 0
             echow result['output']
