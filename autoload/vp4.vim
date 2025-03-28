@@ -452,7 +452,10 @@ function! vp4#PerforceAdd()
     endtry
 
     let changelist = s:PerforcePromptChangelist("Select a changelist to add " . filename, 1)
-    if changelist
+    if g:perforce_debug
+        echom "chose changelist " . changelist
+    endif
+    if changelist != ''
         call s:PerforceSystem('add -c ' . changelist . ' ' . filename)
     endif
 endfunction
@@ -961,7 +964,7 @@ function! vp4#PerforceFilelog(...)
     let g:_vp4_curpos = getcurpos()
 
     " Set up the command.  Limit the maximum number of entries.
-    let command = '-Mj -Ztag filelog -hils ' . filename
+    let command = '-Mj -Ztag filelog -il ' . filename
 
     " Compile all the location list data
     let data = []
