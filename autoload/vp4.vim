@@ -478,7 +478,7 @@ function! vp4#PerforceDelete(bang)
 endfunction
 
 " Call p4 edit.
-function! vp4#PerforceEdit()
+function! vp4#PerforceEdit(...)
     let filename = s:ExpandPath('%')
     if !s:PerforceAssertExists(filename) | return | endif
     let cl = s:PerforceGetCurrentChangelist(filename)
@@ -487,19 +487,24 @@ function! vp4#PerforceEdit()
         return
     endif
 
-    let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
-    if g:perforce_debug
-        echom "chose changelist " . changelist
+    let l:changelist = ''
+    if a:0 >= 1
+        let l:changelist = a:1
+    else
+        let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
+        if g:perforce_debug
+            echom "chose changelist " . changelist
+        endif
     endif
 
-    if changelist == ''
+    if l:changelist == ''
         if g:perforce_debug
             echom "empty changelist"
         endif
         return
     endif
 
-    let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . filename)
+    let result = s:PerforceSystemVerbose('edit -c ' . l:changelist . ' ' . filename)
     if result['exit_code'] == 0
         let saved_curpos = getcurpos()
         " reload the file to refresh &readonly attribute
