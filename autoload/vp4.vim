@@ -1023,7 +1023,18 @@ function! vp4#PromptForOpen()
     if !g:vp4_prompt_on_write
         return
     endif
-    if &readonly && s:PerforceAssertExists(filename)
+    if !&readonly
+        return
+    fi
+    " The file is already opened.
+    let l:text = s:PerforceSystem('-Mj -ztag opened ' . filename)
+    if l:text != ''
+        if g:perforce_debug
+            echom filename . ' is already opened'
+        endif
+        return
+    endif
+    if s:PerforceAssertExists(filename)
         let do_edit = input(filename .
                 \' is not opened for edit.  p4 edit it now? [y/n]: ')
         if do_edit ==? 'y'
