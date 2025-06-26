@@ -1038,9 +1038,9 @@ function! vp4#PromptForOpen()
         let do_edit = input(filename .
                 \' is not opened for edit.  p4 edit it now? [y/n]: ')
         if do_edit ==? 'y'
-            setlocal autoread
             call vp4#PerforceEdit()
         endif
+        setlocal modifiable noreadonly
     endif
 endfunction
 
