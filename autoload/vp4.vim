@@ -918,8 +918,8 @@ function! vp4#PerforceAnnotateLine()
     let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
     if !s:PerforceAssertExists(filename) | return | endif
 
-    " use -i flag to follow branch
-    let perforce_command = 'annotate -icq ' . shellescape(filename, 0)
+    " use -I flag to follow branch, -I implies -c
+    let perforce_command = 'annotate -Iq ' . shellescape(filename, 0)
     let perforce_command .= '| sed -e "' . line(".") . 'q;d"'
     let perforce_command .= '| cut -d: -f1'
     let changes = split(s:PerforceSystem(perforce_command), '\n')
