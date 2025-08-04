@@ -972,8 +972,18 @@ function! vp4#PerforceFilelog(...)
     let command = '-Mj -Ztag filelog -il ' . filename
 
     " Compile all the location list data
+    let retval = s:PerforceSystem(command)
+    if v:shell_error
+        echom filename . ' ' . retval
+        return
+    endif
+
+    if strlen(retval) == 0
+        return
+    endif
+
     let data = []
-    for line in split(s:PerforceSystem(command), '\n')
+    for line in split(retval, '\n')
         let dict = json_decode(line)
         let depotFile = dict["depotFile"]
         let i = 0
