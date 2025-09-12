@@ -484,6 +484,12 @@ function! vp4#PerforceEdit(...)
     let cl = s:PerforceGetCurrentChangelist(filename)
     if cl != 0
         echom filename . ' is already opened in changelist "' . cl . '"'
+        if &readonly
+            setlocal noreadonly
+        endif
+        if &nomodiable
+            setlocal modifiable
+        endif
         return
     endif
 
@@ -1035,7 +1041,7 @@ function! vp4#PromptForOpen()
     endif
     if !&readonly
         return
-    fi
+    endif
     " The file is already opened.
     let l:text = s:PerforceSystem('-Mj -ztag opened ' . filename)
     if l:text != ''
@@ -1050,7 +1056,6 @@ function! vp4#PromptForOpen()
         if do_edit ==? 'y'
             call vp4#PerforceEdit()
         endif
-        setlocal modifiable noreadonly
     endif
 endfunction
 
