@@ -442,21 +442,21 @@ endfunction
 "  File editing
 " Call p4 add.
 function! vp4#PerforceAdd()
-    let filename = s:ExpandPath('%')
+    let l:filename = s:ExpandPath('%')
 
     try
-        let retval = s:PerforceFstat('headRev', filename)
-        call s:EchoError(a:filename . ' already exists on the server: ' . retval)
+        let retval = s:PerforceFstat('headRev', l:filename)
+        call s:EchoError(l:filename . ' already exists on the server: ' . retval)
         return
     catch /PerforceFstatError/
     endtry
 
-    let changelist = s:PerforcePromptChangelist("Select a changelist to add " . filename, 1)
+    let l:changelist = s:PerforcePromptChangelist("Select a changelist to add " . l:filename, 1)
     if g:perforce_debug
-        echom "chose changelist " . changelist
+        echom "chose changelist " . l:changelist
     endif
-    if changelist != ''
-        call s:PerforceSystem('add -c ' . changelist . ' ' . filename)
+    if l:changelist != ''
+        call s:PerforceSystem('add -c ' . l:changelist . ' ' . l:filename)
     endif
 endfunction
 
@@ -517,7 +517,8 @@ function! vp4#PerforceEdit(...)
         execute 'edit ' filename
         call setpos('.', saved_curpos)
         " Sometimes vim doesn't refresh the state correctly.
-        setlocal modifiable noreadonly
+        setlocal modifiable
+        setlocal noreadonly
     else
         echow result['output']
     endif
