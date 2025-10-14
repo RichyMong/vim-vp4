@@ -487,8 +487,8 @@ function! vp4#PerforceEdit(...)
         if &readonly
             setlocal noreadonly
         endif
-        if &nomodiable
-            setlocal modifiable
+        if !&modifiable
+            noetlocal modifiable
         endif
         return
     endif
@@ -714,11 +714,11 @@ function! vp4#PerforceReopen()
         \ . '". Select a changelist to move to: ',
         \ currentchangelist != "default", currentchangelist)
 
-    if changelist
+    if changelist != ''
         echom 'Moving ' . filename . ' to change ' . changelist
         " Perform the reopen command
         let perforce_command = 'reopen -c ' . changelist . ' ' . filename
-        call s:PerforceSystem(perforce_command)
+        silent call s:PerforceSystem(perforce_command) | redraw!
     endif
 endfunction
 "
