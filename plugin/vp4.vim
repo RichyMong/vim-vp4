@@ -42,6 +42,10 @@ call s:set('g:vp4_sync_options', '')
 call s:set('g:vp4_base_path_replacements', {})
 call s:set('g:vp4_disable_default_changelist', 0)
 call s:set('g:_vp4_client', '')
+call s:set('g:_vp4_loclist_winnr', 0)
+call s:set('g:_vp4_filelog_data', [])
+call s:set('g:_vp4_diff_return_tabpage', 0)
+call s:set('g:_vp4_diff_return_winnr', 0)
 
 " }}}
 
@@ -66,6 +70,7 @@ command! -nargs=? Vp4Diff call vp4#PerforceDiff(<f-args>)
 command! -range=% -nargs=? Vp4Annotate <line1>,<line2>call vp4#PerforceAnnotate(<f-args>)
 command! Vp4Change call vp4#PerforceChange()
 command! -nargs=? Vp4Filelog call vp4#PerforceFilelog(<f-args>)
+command! Vp4FilelogDiff call vp4#PerforceFilelogDiff()
 command! -bang Vp4Revert call vp4#PerforceRevert(<bang>0)
 command! -bang Vp4Delete call vp4#PerforceDelete(<bang>0)
 command! Vp4Reopen call vp4#PerforceReopen()

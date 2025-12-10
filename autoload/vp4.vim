@@ -480,6 +480,9 @@ endfunction
 " Call p4 edit.
 function! vp4#PerforceEdit(...)
     let filename = s:ExpandPath('%')
+    if a:0 >= 2
+        let filename = a:2
+    endif
     if !s:PerforceAssertExists(filename) | return | endif
     let cl = s:PerforceGetCurrentChangelist(filename)
     if cl != 0
@@ -990,6 +993,7 @@ function! vp4#PerforceFilelog(...)
     endif
 
     let data = []
+    let g:_vp4_filelog_data = []
     for line in split(retval, '\n')
         let dict = json_decode(line)
         let depotFile = dict["depotFile"]
@@ -1007,11 +1011,14 @@ function! vp4#PerforceFilelog(...)
             let rev = dict['rev' . i]
             " Set up dictionary entry
             let entry = {}
-            let entry['filename'] = depotFile . '#' . rev
+            let full_filename = depotFile . '#' . rev
+            let entry['filename'] = full_filename
             let entry['lnum'] = g:_vp4_curpos[1]
             let entry['text'] = printf("%s %s %s %s %s", change, dict[action], time, user, desc)
             " Add it to the list
             call add(data, entry)
+            " Also save the filename separately for later retrieval
+            call add(g:_vp4_filelog_data, full_filename)
             let i += 1
         endwhile
     endfor
@@ -1021,7 +1028,11 @@ function! vp4#PerforceFilelog(...)
 
     " Automatically open quick-fix or location list
     if g:vp4_open_loclist
+        " Save the window that has the location list
+        let g:_vp4_loclist_winnr = winnr()
         lopen
+        " Add key mapping for showing diff in location list window
+        nnoremap <buffer> <silent> d :<C-U>call <SID>PerforceFilelogShowDiff()<CR>
     endif
 
     " Set auto command for opening specific revisions of files
@@ -1029,6 +1040,180 @@ function! vp4#PerforceFilelog(...)
         autocmd!
         autocmd BufEnter *#* call <SID>PerforceOpenRevision()
     augroup END
+endfunction
+
+" Show the diff for a specific revision against its previous revision
+" Can be called from location list populated by Vp4Filelog
+" Optional argument: line number in the location list (1-based)
+function! vp4#PerforceFilelogDiff(...)
+    " Get the current location list entry
+    let loclist = getloclist(0)
+    if empty(loclist)
+        call s:EchoError('No location list available')
+        return
+    endif
+
+    " Determine which item to show
+    let current_idx = -1
+    if a:0 > 0
+        " Use the provided index (0-based)
+        let current_idx = a:1
+    else
+        " Get the current location list item index
+        let loc_info = getloclist(0, {'idx': 0})
+        if !has_key(loc_info, 'idx') || loc_info.idx == 0
+            call s:EchoError('No item selected in location list')
+            return
+        endif
+        let current_idx = loc_info.idx - 1
+    endif
+
+    " The filename with revision should be stored in g:_vp4_filelog_data
+    " as it's not reliably available in the location list entry
+    if !exists('g:_vp4_filelog_data') || empty(g:_vp4_filelog_data)
+        call s:EchoError('No filelog data available. Please run :Vp4Filelog first')
+        return
+    endif
+
+    if current_idx < 0 || current_idx >= len(g:_vp4_filelog_data)
+        call s:EchoError('Invalid index ' . current_idx . ' (filelog has ' . len(g:_vp4_filelog_data) . ' items)')
+        return
+    endif
+
+    let filename = g:_vp4_filelog_data[current_idx]
+
+    " Also get the entry for the text field
+    if current_idx < len(loclist)
+        let entry = loclist[current_idx]
+    else
+        " Fallback: create a minimal entry
+        let entry = {'text': 'Unknown change'}
+    endif
+
+    " Debug output
+    if g:perforce_debug
+        echom 'Using index: ' . current_idx
+        echom 'Filename: ' . filename
+        if has_key(entry, 'text')
+            echom 'Entry text: ' . entry['text']
+        endif
+    endif
+
+    " Extract the revision number from the filename (format: //depot/path#rev)
+    let rev_match = matchstr(filename, '#\zs[0-9]\+\ze$')
+    if rev_match == ''
+        call s:EchoError('Could not extract revision number from: ' . filename)
+        return
+    endif
+
+    let rev = str2nr(rev_match)
+    if rev <= 1
+        call s:EchoWarning('Revision ' . rev . ' has no previous revision to diff against')
+        return
+    endif
+
+    " Get the base filename without revision
+    let base_filename = substitute(filename, '#[0-9]\+$', '', '')
+    let prev_filename = base_filename . '#' . (rev - 1)
+    let curr_filename = base_filename . '#' . rev
+
+    " Save information about where we came from (for returning later)
+    let g:_vp4_diff_return_tabpage = tabpagenr()
+    let g:_vp4_diff_return_winnr = winnr()
+
+    " Open a new window to show the diff
+    let filetype = &filetype
+    if bufname('%') == ''
+        " If current buffer is empty, use it
+        enew
+    else
+        " Otherwise create a new split
+        tabnew
+    endif
+
+    " Add a helpful header first
+    call append(0, ['# Perforce Diff for ' . base_filename,
+                \ '# Comparing revision #' . (rev - 1) . ' -> #' . rev,
+                \ '# Change: ' . entry['text'],
+                \ ''])
+
+    " Get the diff output using p4 diff2
+    let perforce_command = 'diff2 -du ' . shellescape(prev_filename, 1)
+                \ . ' ' . shellescape(curr_filename, 1)
+
+    silent call s:PerforceRead(perforce_command)
+
+    " Set buffer options
+    setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
+    setlocal filetype=diff
+    setlocal nomodifiable
+
+    " Map q to close and return to location list
+    nnoremap <buffer> <silent> q :<C-U>call <SID>PerforceFilelogDiffClose()<CR>
+endfunction
+
+" Close the diff window and return to location list
+function! s:PerforceFilelogDiffClose()
+    " Close current buffer (diff window)
+    bdelete
+
+    " Try to return to the saved tab and window
+    if exists('g:_vp4_diff_return_tabpage') && exists('g:_vp4_diff_return_winnr')
+        " Go to the saved tab page
+        if tabpagenr() != g:_vp4_diff_return_tabpage
+            execute 'tabnext ' . g:_vp4_diff_return_tabpage
+        endif
+
+        " Go to the saved window (which should be the location list or the source window)
+        if winnr() != g:_vp4_diff_return_winnr
+            execute g:_vp4_diff_return_winnr . 'wincmd w'
+        endif
+
+        " Now find the location list window in this tab
+        for winnr in range(1, winnr('$'))
+            if getwinvar(winnr, '&buftype') == 'quickfix'
+                " Check if it's a location list (not quickfix)
+                let wininfo = getwininfo(win_getid(winnr))
+                if !empty(wininfo) && wininfo[0].loclist
+                    execute winnr . 'wincmd w'
+                    return
+                endif
+            endif
+        endfor
+    endif
+
+    " If we couldn't find the location list, just stay where we are
+endfunction
+
+" Show the diff for current file revision from location list
+function! s:PerforceFilelogShowDiff()
+    " When in location list window, get the current index
+    " The line() function gives us the line number, which should match the location list index
+    let loclist = getloclist(0)
+    let current_line = line('.')
+
+    " The location list index is the line number
+    " But we need to find the corresponding index in g:_vp4_filelog_data
+    let selected_idx = current_line - 1
+
+    if g:perforce_debug
+        echom 'Location list line: ' . current_line . ', index: ' . selected_idx
+        echom 'Total items in filelog_data: ' . len(g:_vp4_filelog_data)
+    endif
+
+    " The location list window shows items from the previous window
+    " We need to go back to get the actual location list data
+
+    " Try to go to the window that has the location list
+    if exists('g:_vp4_loclist_winnr') && winbufnr(g:_vp4_loclist_winnr) != -1
+        execute g:_vp4_loclist_winnr . 'wincmd w'
+    else
+        " Fallback: go to the previous window
+        wincmd p
+    endif
+
+    " Now call the diff function with the selected index (0-based)
+    call vp4#PerforceFilelogDiff(selected_idx)
 endfunction
 "
 
