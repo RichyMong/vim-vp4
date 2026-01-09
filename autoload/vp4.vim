@@ -3,6 +3,26 @@
 " Last Change:  Nov 22, 2016
 " Author:       Emily Ng
 
+"  Explorer window width configuration
+" Options:
+"   - 'auto'    : 自动适配宽度（根据文件名最长行）
+"   - 数字      : 固定宽度（如 30、40、50）
+"   - '20%'等   : 按比例设置（窗口宽度的百分比）
+" 默认: 'auto'
+if !exists('g:vp4_explore_width')
+    let g:vp4_explore_width = 'auto'
+endif
+
+" 最小窗口宽度（用于 auto 模式）
+if !exists('g:vp4_explore_min_width')
+    let g:vp4_explore_min_width = 30
+endif
+
+" 最大窗口宽度（用于 auto 模式）
+if !exists('g:vp4_explore_max_width')
+    let g:vp4_explore_max_width = 60
+endif
+
 "  Explorer global data structures
 " directory object data
 " dir_data = {
@@ -1481,6 +1501,48 @@ function! s:ExplorerRender(key, ...)
 
 endfunction
 
+" Calculate optimal window width based on buffer content
+function! s:ExplorerAdjustWidth()
+    let width_config = g:vp4_explore_width
+
+    " Handle percentage-based width
+    if width_config =~ '%$'
+        let percentage = str2nr(width_config[:-2])
+        if percentage > 0 && percentage < 100
+            let total_width = &columns
+            let target_width = total_width * percentage / 100
+            exec 'vertical resize ' . target_width
+        endif
+        return
+    endif
+
+    " Handle fixed width (numeric)
+    if width_config =~ '^\d\+$'
+        exec 'vertical resize ' . width_config
+        return
+    endif
+
+    " Handle auto mode
+    if width_config == 'auto'
+        " Find the longest line in the buffer
+        let max_len = 0
+        for i in range(1, line('$'))
+            let line_text = getline(i)
+            let line_len = strwidth(line_text)
+            if line_len > max_len
+                let max_len = line_len
+            endif
+        endfor
+
+        " Apply min/max constraints
+        let target_width = max_len + 4  " add some padding
+        let target_width = max([target_width, g:vp4_explore_min_width])
+        let target_width = min([target_width, g:vp4_explore_max_width])
+
+        exec 'vertical resize ' . target_width
+    endif
+endfunction
+
 " Populate directory data at given node
 function! s:ExplorerPopulate(filepath)
     let perforce_filepath = a:filepath
@@ -1585,6 +1647,7 @@ function! vp4#PerforceExplore(...)
 
     call s:ExplorerPopulate(perforce_filepath)
     call s:ExplorerRender(perforce_filepath)
+    call s:ExplorerAdjustWidth()
 
     " mappings
     nnoremap <script> <silent> <buffer> <CR> :call <sid>ExplorerGoTo()<CR>
