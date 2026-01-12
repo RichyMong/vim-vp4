@@ -511,7 +511,7 @@ function! vp4#PerforceEdit(...)
             setlocal noreadonly
         endif
         if !&modifiable
-            noetlocal modifiable
+            setlocal modifiable
         endif
         return
     endif
@@ -598,6 +598,8 @@ function! vp4#PerforceRevert(bang)
     let filename = s:ExpandPath('%')
     if !s:PerforceAssertOpened(filename) | return | endif
 
+    let action = s:PerforceQuery('action', filename)
+
     if !a:bang
         let do_revert = input('Are you sure you want to revert ' . filename
                 \ . '? [y/n]: ')
@@ -605,15 +607,22 @@ function! vp4#PerforceRevert(bang)
 
     if a:bang || do_revert ==? 'y'
         call s:PerforceSystem('revert ' .filename)
-        setlocal nomodifiable
-        setlocal nomodified
-        setlocal readonly
-    endif
 
-    " reload the file to refresh &readonly attribute
-    execute 'edit ' filename
-    setlocal nomodifiable
-    setlocal readonly
+        if action == 'add'
+            execute 'edit ' filename
+            setlocal modifiable
+            setlocal noreadonly
+        else
+            setlocal nomodifiable
+            setlocal nomodified
+            setlocal readonly
+
+            " reload the file to refresh &readonly attribute
+            execute 'edit ' filename
+            setlocal nomodifiable
+            setlocal readonly
+        endif
+    endif
 endfunction
 "
 
@@ -1150,6 +1159,9 @@ function! vp4#PerforceFilelogDiff(...)
         " Otherwise create a new split
         tabnew
     endif
+
+    " Make the buffer modifiable before calling append()
+    setlocal modifiable
 
     " Add a helpful header first
     call append(0, ['# Perforce Diff for ' . base_filename,
