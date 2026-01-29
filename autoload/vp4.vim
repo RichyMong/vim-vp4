@@ -536,12 +536,17 @@ function! vp4#PerforceEdit(...)
     let result = s:PerforceSystemVerbose('edit -c ' . l:changelist . ' ' . filename)
     if result['exit_code'] == 0
         let saved_curpos = getcurpos()
-        " reload the file to refresh &readonly attribute
-        execute 'edit ' filename
-        call setpos('.', saved_curpos)
-        " Sometimes vim doesn't refresh the state correctly.
-        setlocal modifiable
+        " After p4 edit, the file is writable in filesystem
+        " Update vim's buffer state before reloading
         setlocal noreadonly
+        setlocal modifiable
+        " Save if there are unsaved changes
+        if &modified
+            write
+        endif
+        " Reload the file to ensure consistent state
+        execute 'edit! ' . filename
+        call setpos('.', saved_curpos)
     else
         echow result['output']
     endif
