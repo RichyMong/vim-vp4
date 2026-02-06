@@ -54,6 +54,13 @@ let s:directory_map = {}
 
 "  Helper functions
 
+" Debug helper function - only output if g:perforce_debug is true
+function! s:Debug(msg)
+    if g:perforce_debug
+        echom a:msg
+    endif
+endfunction
+
 function! s:GetClientName()
     if g:_vp4_client == ''
         let l:text = s:PerforceSystem('-Mj -ztag info')
@@ -61,6 +68,42 @@ function! s:GetClientName()
         let g:_vp4_client = l:dict["clientName"]
     endif
     return g:_vp4_client
+endfunction
+
+" Get client name for a specific file path by guessing workspace
+" Returns the guessed workspace, or empty string if guessing fails
+function! s:GetClientNameForFile(filename)
+    let filepath = expand(a:filename)
+    call s:Debug("DBG Guessing workspace for file: " . filepath)
+
+    " Use ngr to guess workspace by path
+    let command = 'ngr p4 client -p ' . shellescape(filepath)
+    call s:Debug("DBG Running command: " . command)
+
+    let output = system(command)
+    let exit_code = v:shell_error
+
+    call s:Debug("DBG workspace guess exit_code:" . exit_code . " output_len:" . strlen(output))
+    if strlen(output) < 200
+        call s:Debug("DBG output: " . output)
+    endif
+
+    if exit_code == 0 && output != ''
+        try
+            let dict = json_decode(output)
+            if has_key(dict, 'Name')
+                call s:Debug("DBG Guessed workspace: " . dict['Name'])
+                return dict['Name']
+            else
+                echom "ngr p4 client -p return with no 'Name' field"
+            endif
+        catch
+            call s:Debug("DBG json_decode failed: " . output)
+        endtry
+    endif
+
+    " Guessing failed, return empty string to fall back to current workspace
+    return ''
 endfunction
 
 "  Generic Helper functions
@@ -103,35 +146,65 @@ endfunction
 
 " Perforce system functions with verbose information
 " Return a dictionary with the output and exit code
-function! s:PerforceSystemVerbose(cmd)
+" a:1: if a string (filepath), guess workspace by file path (fallback to current if fails)
+function! s:PerforceSystemVerbose(cmd, ...)
+    let l:p4cmd = g:vp4_perforce_executable
+    if a:0 && a:1
+        if type(a:1) == v:t_string
+            " a:1 is a file path, guess workspace
+            let l:client_name = s:GetClientNameForFile(a:1)
+            if l:client_name == ''
+                let l:client_name = s:GetClientName()
+            endif
+        else
+            let l:client_name = s:GetClientName()
+        endif
+        let l:p4cmd = l:p4cmd . " -c " . l:client_name
+    endif
+    let l:p4cmd = l:p4cmd . " " . a:cmd
 	if has('win64') || has('win32')
-		let command = g:vp4_perforce_executable . " " . a:cmd . " 2> NUL"
+		let command = l:p4cmd . " 2> NUL"
 	else
 		let prev = &shell
 		set shell=sh
-		let command = g:vp4_perforce_executable . " " . a:cmd . " 2>&1"
+		let command = l:p4cmd . " 2>&1"
 	endif
-    if g:perforce_debug
-        echom "DBG sys: " . command
-    endif
+    call s:Debug("DBG sys verbose: " . command)
     let output = system(command)
     let exit_code = v:shell_error
 	if ! has('win64') && ! has('win32')
 		let &shell=prev
 	endif
-    if g:perforce_debug
-        echom "DBG sys: " . command . " exit_code:" . exit_code . " output:" . output
-    endif
+    call s:Debug("DBG sys verbose: " . command . " exit_code:" . exit_code . " output:" . output)
     return { 'output': output, 'exit_code': exit_code }
 endfunction
 
 "  Perforce system functions
 " Return result of calling p4 command
-" a:1 if restrict the command in the current workspace
+" a:1: if 1/true, restrict to current workspace
+"      if a string (filepath), guess workspace by file path (fallback to current if fails)
 function! s:PerforceSystem(cmd, ...)
     let l:p4cmd = g:vp4_perforce_executable
-    if a:0 && a:1
-		let l:p4cmd = l:p4cmd . " -c " . s:GetClientName()
+    if a:0 >= 1
+        " Use default workspace if no valid workspace was determined
+        let l:client_name = s:GetClientName()
+
+        call s:Debug("DBG a:1:" . a:1 . " default client_name:" . l:client_name)
+        if a:1 == 1
+            " a:1 is boolean true, use default workspace
+            " l:client_name already set to s:GetClientName() above
+        elseif strlen(a:1) > 0
+            " a:1 is a non-empty file path, try to guess workspace
+            let l:guessed_client = s:GetClientNameForFile(a:1)
+            if l:guessed_client != ''
+                let l:client_name = l:guessed_client
+            endif
+            call s:Debug("DBG path:" . a:1 . " client_name:" . l:client_name)
+        else
+            call s:Debug("DBG unexpected branch, a:1:" . a:1)
+        endif
+
+        let l:p4cmd = l:p4cmd . " -c " . l:client_name
     endif
     let l:p4cmd = l:p4cmd . " " . a:cmd
 	if has('win64') || has('win32')
@@ -141,16 +214,12 @@ function! s:PerforceSystem(cmd, ...)
 		set shell=sh
 		let l:p4cmd = l:p4cmd . " 2> /dev/null"
 	endif
-    if g:perforce_debug
-        echom "DBG sys: " . l:p4cmd
-    endif
+    call s:Debug("DBG sys: " . l:p4cmd)
     let retval = system(l:p4cmd)
 	if ! has('win64') && ! has('win32')
 		let &shell=prev
 	endif
-    if g:perforce_debug
-        echom "DBG sys: " . l:p4cmd . " out:" . retval
-    endif
+    call s:Debug("DBG sys: " . l:p4cmd . " out:" . retval)
     return retval
 endfunction
 
@@ -159,9 +228,7 @@ function! s:PerforceRead(cmd)
     let _modifiable = &modifiable
     set modifiable
     let command = '$read !' . g:vp4_perforce_executable . " " . a:cmd
-    if g:perforce_debug
-        echom "DBG read: " . command
-    endif
+    call s:Debug("DBG read: " . command)
     " Populate the window and get rid of the extra line at the top
     execute command
     1
@@ -172,44 +239,30 @@ endfunction
 " Use current buffer as stdin to p4 command
 function! s:PerforceWrite(cmd)
     let command = 'write !' . g:vp4_perforce_executable . " " . a:cmd
-    if g:perforce_debug
-        echom "DBG write: " . command
-    endif
+    call s:Debug("DBG write: " . command)
     execute command
 endfunction
 
 " Function to get the path of the file
 function! s:ExpandPath(file)
     if exists("g:vp4_base_path_replacements")
-        if g:perforce_debug
-            echom "We have a base path replacements"
-        endif
+        call s:Debug("We have a base path replacements")
         let l:oldPath = expand('%:p')
         let l:replacements = items(g:vp4_base_path_replacements)
         for item in l:replacements
-            if g:perforce_debug
-                echom "does " . l:oldPath . " match " . item[0]
-            endif
+            call s:Debug("does " . l:oldPath . " match " . item[0])
             if l:oldPath =~ item[0]
                 " We have a match
-                if g:perforce_debug
-                    echom "Matched string " . item[0] . " in " . l:oldPath
-                endif
+                call s:Debug("Matched string " . item[0] . " in " . l:oldPath)
                 let l:newFile = substitute(l:oldPath, item[0], item[1], "")
-                if g:perforce_debug
-                    echom "New path " . l:newFile
-                endif
+                call s:Debug("New path " . l:newFile)
                 return l:newFile
             endif
         endfor
-        if g:perforce_debug
-            echom "Did not find replacement, return"
-        endif
+        call s:Debug("Did not find replacement, return")
         return expand(a:file)
     else
-        if g:perforce_debug
-            echom "Using default pathing"
-        endif
+        call s:Debug("Using default pathing")
         return expand(a:file)
     endif
 endfunction
@@ -226,13 +279,11 @@ function! s:PerforceFstat(field, filename)
     "   3. not shelved in changelist
     " It always starts a valid line with '...'; use it to validate response.
     " It does return -1 if an invalid field was requested.
-    let val = s:PerforceSystem('-ztag -F%' . a:field . '% fstat ' . a:filename)
+    let val = s:PerforceSystem('-ztag -F%' . a:field . '% fstat ' . a:filename, a:filename)
     let val = trim(val)
     if v:shell_error == 0 && val != ''
-        if g:perforce_debug
-            echom 'fstat got value ' . val . ' for field ' . a:field
-                    \ . ' on file ' . a:filename
-        endif
+        call s:Debug('fstat got value ' . val . ' for field ' . a:field
+                    \ . ' on file ' . a:filename)
         return val
     endif
 
@@ -422,9 +473,7 @@ function! s:PerforcePromptChangelist(prompt, with_default, ...)
         echom a:prompt
         let change = inputlist(changes)
 
-        if g:perforce_debug
-            echom "select input is [" . change . "]"
-        endif
+        call s:Debug("select input is [" . change . "]")
 
         " From the user's input, get the actual changelist number
         if !change | return "" | endif
@@ -472,11 +521,9 @@ function! vp4#PerforceAdd()
     endtry
 
     let l:changelist = s:PerforcePromptChangelist("Select a changelist to add " . l:filename, 1)
-    if g:perforce_debug
-        echom "chose changelist " . l:changelist
-    endif
+    call s:Debug("chose changelist " . l:changelist)
     if l:changelist != ''
-        call s:PerforceSystem('add -c ' . l:changelist . ' ' . l:filename)
+        call s:PerforceSystem('add -c ' . l:changelist . ' ' . l:filename, l:filename)
     endif
 endfunction
 
@@ -491,7 +538,7 @@ function! vp4#PerforceDelete(bang)
     endif
 
     if a:bang || do_delete ==? 'y'
-        call s:PerforceSystem('delete ' .filename)
+        call s:PerforceSystem('delete ' .filename, filename)
         bdelete
     endif
 
@@ -521,19 +568,15 @@ function! vp4#PerforceEdit(...)
         let l:changelist = a:1
     else
         let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
-        if g:perforce_debug
-            echom "chose changelist " . changelist
-        endif
+        call s:Debug("chose changelist " . changelist)
     endif
 
     if l:changelist == ''
-        if g:perforce_debug
-            echom "empty changelist"
-        endif
+        call s:Debug("empty changelist")
         return
     endif
 
-    let result = s:PerforceSystemVerbose('edit -c ' . l:changelist . ' ' . filename)
+    let result = s:PerforceSystemVerbose('edit -c ' . l:changelist . ' ' . filename, filename)
     if result['exit_code'] == 0
         let saved_curpos = getcurpos()
         " After p4 edit, the file is writable in filesystem
@@ -557,21 +600,15 @@ function! vp4#PerforceEditFilesInQuickFixList()
 
     let l:qflist = getqflist()
     let l:files = l:qflist->map({_,val -> fnamemodify(bufname(val.bufnr), ':p')})->sort()->uniq()
-    if g:perforce_debug
-        echom len(getqflist()) . ' items and ' . len(l:files) .
-               \' unique files in quickfix list'
-    endif
+    call s:Debug(len(getqflist()) . ' items and ' . len(l:files) .
+               \' unique files in quickfix list')
 
     for filename in l:files
         if !s:PerforceAssertExists(filename) | continue | endif
         let cl = s:PerforceGetCurrentChangelist(filename)
-        if g:perforce_debug
-            echom filename . ' got "' . cl . '"'
-        endif
+        call s:Debug(filename . ' got "' . cl . '"')
         if cl == "default" || cl != 0
-            if g:perforce_debug
-                echom filename . ' is already opened in changelist "' . cl . '"'
-            endif
+            call s:Debug(filename . ' is already opened in changelist "' . cl . '"')
             continue
         endif
         let l:unopened_files += [filename]
@@ -581,20 +618,33 @@ function! vp4#PerforceEditFilesInQuickFixList()
         return
     endif
 
-    if g:perforce_debug
-        echom 'unopened files"' . l:unopened_files . '"'
-    endif
+    call s:Debug('unopened files"' . l:unopened_files . '"')
 
     let changelist = s:PerforcePromptChangelist("Select a changelist to open the files", 1)
-    if g:perforce_debug
-        echom "chose changelist " . changelist
-    endif
+    call s:Debug("chose changelist " . changelist)
 
     if changelist != ''
-        let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . join(l:unopened_files, ' '))
-        if result['exit_code'] != 0
-            echow result['output']
-        endif
+        " Since files may be from different workspaces, we need to group them by workspace
+        " and edit each group separately
+        let l:by_workspace = {}
+        for filename in l:unopened_files
+            let l:ws = s:GetClientNameForFile(filename)
+            if l:ws == ''
+                let l:ws = s:GetClientName()
+            endif
+            if !has_key(l:by_workspace, l:ws)
+                let l:by_workspace[l:ws] = []
+            endif
+            call add(l:by_workspace[l:ws], filename)
+        endfor
+
+        for l:ws in keys(l:by_workspace)
+            let l:files_str = join(l:by_workspace[l:ws], ' ')
+            let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . l:files_str, l:by_workspace[l:ws][0])
+            if result['exit_code'] != 0
+                echow result['output']
+            endif
+        endfor
     endif
 endfunction
 
@@ -643,7 +693,7 @@ function! vp4#PerforceShelve(bang)
     if cl !~# 'default'
         let perforce_command .= ' -c ' . cl
         if a:bang | let perforce_command .= ' -f' | endif
-        let msg = split(s:PerforceSystem(perforce_command . ' ' . filename), '\n')
+        let msg = split(s:PerforceSystem(perforce_command . ' ' . filename, filename), '\n')
         if v:shell_error | call s:EchoError(msg[-1]) | endif
         let msg = filename . ' shelved in p4:' . cl
         echom msg
@@ -755,7 +805,7 @@ function! vp4#PerforceReopen()
         echom 'Moving ' . filename . ' to change ' . changelist
         " Perform the reopen command
         let perforce_command = 'reopen -c ' . changelist . ' ' . filename
-        silent call s:PerforceSystem(perforce_command) | redraw!
+        silent call s:PerforceSystem(perforce_command, filename) | redraw!
     endif
 endfunction
 "
@@ -868,9 +918,7 @@ function! s:PerforceAnnotateFull(lbegin, lend)
                 execute " syn keyword VP4User " . data[line]['user']
             catch
                 echom 'failed to get data for change ' . line
-                if g:perforce_debug
-                    echom join(cl_data)
-                endif
+                call s:Debug(join(cl_data))
                 continue
             endtry
         endif
@@ -968,15 +1016,11 @@ function! vp4#PerforceAnnotateLine()
     let perforce_command .= '| cut -d: -f1'
     let changes = split(s:PerforceSystem(perforce_command), '\n')
     if v:shell_error || len(changes) == 0
-        if g:perforce_debug
-            echom 'file:' . filename . 'no changes'
-        endif
+        call s:Debug('file:' . filename . 'no changes')
         return
     endif
 
-    if g:perforce_debug
-        echom 'file:' . filename . ', change:' . changes[0]
-    endif
+    call s:Debug('file:' . filename . ', change:' . changes[0])
 
     let lines = []
     " The change may be inherited so we include %path% here.
@@ -1016,7 +1060,7 @@ function! vp4#PerforceFilelog(...)
     let command = '-Mj -Ztag filelog -il ' . filename
 
     " Compile all the location list data
-    let retval = s:PerforceSystem(command)
+    let retval = s:PerforceSystem(command, filename)
     if v:shell_error
         echom filename . ' ' . retval
         return
@@ -1266,11 +1310,9 @@ function! vp4#PromptForOpen()
         return
     endif
     " The file is already opened.
-    let l:text = s:PerforceSystem('-Mj -ztag opened ' . filename)
+    let l:text = s:PerforceSystem('-Mj -ztag opened ' . filename, filename)
     if l:text != ''
-        if g:perforce_debug
-            echom filename . ' is already opened'
-        endif
+        call s:Debug(filename . ' is already opened')
         return
     endif
     if s:PerforceAssertExists(filename)
@@ -1337,10 +1379,8 @@ function! vp4#CheckServerPath(filename)
         let new_bufnr = bufnr('%')
         let new_bufname = bufname('%')
 
-        if g:perforce_debug
-            echom 'old: ' . old_bufnr . ' ' . old_bufname
-            echom 'new: ' . new_bufnr . ' ' . new_bufname
-        endif
+        call s:Debug('old: ' . old_bufnr . ' ' . old_bufname)
+        call s:Debug('new: ' . new_bufnr . ' ' . new_bufname)
 
         execute 'buffer ' . new_bufnr
         execute 'doauto BufRead'
@@ -1566,9 +1606,7 @@ function! s:ExplorerPopulate(filepath)
     if strpart(a:filepath, strlen(a:filepath) - 1, 1) != '/'
         let perforce_filepath .= '/'
     endif
-    if g:perforce_debug
-        echom 'Populating "' . perforce_filepath . '" ...'
-    endif
+    call s:Debug('Populating "' . perforce_filepath . '" ...')
 
     if !has_key(s:directory_data, perforce_filepath)
         let s:directory_data[perforce_filepath] = {
