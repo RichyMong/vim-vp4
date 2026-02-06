@@ -56,7 +56,7 @@ let s:directory_map = {}
 
 " Debug helper function - only output if g:perforce_debug is true
 function! s:Debug(msg)
-    if g:perforce_debug
+    if exists('g:perforce_debug') && g:perforce_debug
         echom a:msg
     endif
 endfunction
@@ -144,41 +144,6 @@ function! s:GoToWindowForBufferName(name)
     endif
 endfunction
 
-" Perforce system functions with verbose information
-" Return a dictionary with the output and exit code
-" a:1: if a string (filepath), guess workspace by file path (fallback to current if fails)
-function! s:PerforceSystemVerbose(cmd, ...)
-    let l:p4cmd = g:vp4_perforce_executable
-    if a:0 && a:1
-        if type(a:1) == v:t_string
-            " a:1 is a file path, guess workspace
-            let l:client_name = s:GetClientNameForFile(a:1)
-            if l:client_name == ''
-                let l:client_name = s:GetClientName()
-            endif
-        else
-            let l:client_name = s:GetClientName()
-        endif
-        let l:p4cmd = l:p4cmd . " -c " . l:client_name
-    endif
-    let l:p4cmd = l:p4cmd . " " . a:cmd
-	if has('win64') || has('win32')
-		let command = l:p4cmd . " 2> NUL"
-	else
-		let prev = &shell
-		set shell=sh
-		let command = l:p4cmd . " 2>&1"
-	endif
-    call s:Debug("DBG sys verbose: " . command)
-    let output = system(command)
-    let exit_code = v:shell_error
-	if ! has('win64') && ! has('win32')
-		let &shell=prev
-	endif
-    call s:Debug("DBG sys verbose: " . command . " exit_code:" . exit_code . " output:" . output)
-    return { 'output': output, 'exit_code': exit_code }
-endfunction
-
 "  Perforce system functions
 " Return result of calling p4 command
 " a:1: if 1/true, restrict to current workspace
@@ -224,10 +189,17 @@ function! s:PerforceSystem(cmd, ...)
 endfunction
 
 " Append results of p4 command to current buffer
-function! s:PerforceRead(cmd)
+function! s:PerforceRead(cmd, ...)
     let _modifiable = &modifiable
     set modifiable
-    let command = '$read !' . g:vp4_perforce_executable . " " . a:cmd
+    let command = '$read !' . g:vp4_perforce_executable
+    if a:0 > 0
+        let l:guessed_client = s:GetClientNameForFile(a:1)
+        if strlen(l:guessed_client) > 0
+            let command .= " -c " . l:guessed_client
+        endif
+    endif
+    let command .= " " . a:cmd
     call s:Debug("DBG read: " . command)
     " Populate the window and get rid of the extra line at the top
     execute command
@@ -260,11 +232,10 @@ function! s:ExpandPath(file)
             endif
         endfor
         call s:Debug("Did not find replacement, return")
-        return expand(a:file)
     else
         call s:Debug("Using default pathing")
-        return expand(a:file)
     endif
+    return expand(a:file)
 endfunction
 "
 
@@ -299,7 +270,8 @@ endfunction
 " Assert fstat field
 function! s:PerforceAssert(field, filename, msg)
     try
-        let retval = s:PerforceFstat(a:field, a:filename)
+        let file = s:PerforceStripRevision(a:filename)
+        let retval = s:PerforceFstat(a:field, file)
     catch /PerforceFstatError/
         call s:EchoError(a:msg)
         return 0
@@ -576,7 +548,7 @@ function! vp4#PerforceEdit(...)
         return
     endif
 
-    let result = s:PerforceSystemVerbose('edit -c ' . l:changelist . ' ' . filename, filename)
+    let result = s:PerforceSystem('edit -c ' . l:changelist . ' ' . filename, filename)
     if result['exit_code'] == 0
         let saved_curpos = getcurpos()
         " After p4 edit, the file is writable in filesystem
@@ -640,7 +612,7 @@ function! vp4#PerforceEditFilesInQuickFixList()
 
         for l:ws in keys(l:by_workspace)
             let l:files_str = join(l:by_workspace[l:ws], ' ')
-            let result = s:PerforceSystemVerbose('edit -c ' . changelist . ' ' . l:files_str, l:by_workspace[l:ws][0])
+            let result = s:PerforceSystem('edit -c ' . changelist . ' ' . l:files_str, l:by_workspace[l:ws][0])
             if result['exit_code'] != 0
                 echow result['output']
             endif
@@ -819,6 +791,7 @@ endfunction
     "  #rev    diffs with given revision
     "  <none>  diffs with have revision
 function! vp4#PerforceDiff(...)
+    let local_file = s:ExpandPath('%:p')
     let filename = s:ExpandPath('%')
 
     " Check for options
@@ -857,7 +830,7 @@ function! vp4#PerforceDiff(...)
         let perforce_command .= ' -q'
     endif
     let perforce_command .= ' ' . shellescape(filename, 1)
-    silent call s:PerforceRead(perforce_command)
+    silent call s:PerforceRead(perforce_command, local_file)
 
     " Set local buffer options
     setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile nowrap
@@ -1026,7 +999,7 @@ function! vp4#PerforceAnnotateLine()
     " The change may be inherited so we include %path% here.
     let perforce_command = '-Ztag -F "change#%change% %path% %user%@%client% '
                 \ . '%time% %desc%" describe -s -m1 '
-    let output = s:PerforceSystem(perforce_command . changes[0])
+    let output = s:PerforceSystem(perforce_command . changes[0], filename)
     if v:shell_error || len(output) == 0
         call s:EchoError('file:' . filename . ' describe error')
         return
