@@ -633,7 +633,7 @@ function! vp4#PerforceRevert(bang)
     endif
 
     if a:bang || do_revert ==? 'y'
-        call s:PerforceSystem('revert ' .filename)
+        call s:PerforceSystem('revert ' .filename, s:ExpandPath("%:p"))
 
         if action == 'add'
             execute 'edit ' filename
