@@ -70,20 +70,20 @@ function! s:GetClientName()
     return g:_vp4_client
 endfunction
 
-" Get client name for a specific file path by guessing workspace
-" Returns the guessed workspace, or empty string if guessing fails
+" Get client name for a specific file path by guessing client
+" Returns the guessed client, or empty string if guessing fails
 function! s:GetClientNameForFile(filename)
     let filepath = expand(a:filename)
-    call s:Debug("DBG Guessing workspace for file: " . filepath)
+    call s:Debug("DBG Guessing client for file: " . filepath)
 
-    " Use ngr to guess workspace by path
+    " Use ngr to guess client by path
     let command = 'ngr p4 client -p ' . shellescape(filepath)
     call s:Debug("DBG Running command: " . command)
 
     let output = system(command)
     let exit_code = v:shell_error
 
-    call s:Debug("DBG workspace guess exit_code:" . exit_code . " output_len:" . strlen(output))
+    call s:Debug("DBG client guess exit_code:" . exit_code . " output_len:" . strlen(output))
     if strlen(output) < 200
         call s:Debug("DBG output: " . output)
     endif
@@ -92,7 +92,7 @@ function! s:GetClientNameForFile(filename)
         try
             let dict = json_decode(output)
             if has_key(dict, 'Name')
-                call s:Debug("DBG Guessed workspace: " . dict['Name'])
+                call s:Debug("DBG Guessed client: " . dict['Name'])
                 return dict['Name']
             else
                 echom "ngr p4 client -p return with no 'Name' field"
@@ -102,8 +102,8 @@ function! s:GetClientNameForFile(filename)
         endtry
     endif
 
-    " Guessing failed, return empty string to fall back to current workspace
-    return ''
+    " Guessing failed, return empty string to fall back to current client
+    return s:GetClientName()
 endfunction
 
 "  Generic Helper functions
@@ -144,40 +144,35 @@ function! s:GoToWindowForBufferName(name)
     endif
 endfunction
 
+" Perforce system functions with the specific client
+" Return result of calling p4 command
+function! s:PerforceSystemWithClient(cmd, client)
+    return s:PerforceSystem(" -c " . a:client . " " . a:cmd)
+endfunction
+
+" Perforce system functions with the specific file's client.
+" Return result of calling p4 command
+function! s:PerforceSystemWithFile(cmd, filepath)
+    let l:client_name = s:GetClientNameForFile(a:filepath)
+    if strlen(l:client_name) > 0
+        call s:Debug("DBG path:" . a:filepath . " client_name:" . l:client_name)
+    else
+        let l:client_name = s:GetClientName()
+        call s:Debug("DBG path:" . a:filepath . " use default client_name:" . l:client_name)
+    endif
+    return s:PerforceSystemWithClient(a:cmd, l:client_name)
+endfunction
+
 "  Perforce system functions
 " Return result of calling p4 command
-" a:1: if 1/true, restrict to current workspace
-"      if a string (filepath), guess workspace by file path (fallback to current if fails)
-function! s:PerforceSystem(cmd, ...)
-    let l:p4cmd = g:vp4_perforce_executable
-    if a:0 >= 1
-        " Use default workspace if no valid workspace was determined
-        let l:client_name = s:GetClientName()
-
-        call s:Debug("DBG a:1:" . a:1 . " default client_name:" . l:client_name)
-        if a:1 == 1
-            " a:1 is boolean true, use default workspace
-            " l:client_name already set to s:GetClientName() above
-        elseif strlen(a:1) > 0
-            " a:1 is a non-empty file path, try to guess workspace
-            let l:guessed_client = s:GetClientNameForFile(a:1)
-            if l:guessed_client != ''
-                let l:client_name = l:guessed_client
-            endif
-            call s:Debug("DBG path:" . a:1 . " client_name:" . l:client_name)
-        else
-            call s:Debug("DBG unexpected branch, a:1:" . a:1)
-        endif
-
-        let l:p4cmd = l:p4cmd . " -c " . l:client_name
-    endif
-    let l:p4cmd = l:p4cmd . " " . a:cmd
+function! s:PerforceSystem(cmd)
+    let l:p4cmd = g:vp4_perforce_executable . " " . a:cmd
 	if has('win64') || has('win32')
-		let l:p4cmd = l:p4cmd . " 2> NUL"
+		let l:p4cmd .= . " 2> NUL"
 	else
 		let prev = &shell
 		set shell=sh
-		let l:p4cmd = l:p4cmd . " 2> /dev/null"
+		let l:p4cmd .= " 2> /dev/null"
 	endif
     call s:Debug("DBG sys: " . l:p4cmd)
     let retval = system(l:p4cmd)
@@ -250,7 +245,7 @@ function! s:PerforceFstat(field, filename)
     "   3. not shelved in changelist
     " It always starts a valid line with '...'; use it to validate response.
     " It does return -1 if an invalid field was requested.
-    let val = s:PerforceSystem('-ztag -F%' . a:field . '% fstat ' . a:filename, a:filename)
+    let val = s:PerforceSystemWithFile('-ztag -F%' . a:field . '% fstat ' . a:filename, a:filename)
     let val = trim(val)
     if v:shell_error == 0 && val != ''
         call s:Debug('fstat got value ' . val . ' for field ' . a:field
@@ -495,7 +490,7 @@ function! vp4#PerforceAdd()
     let l:changelist = s:PerforcePromptChangelist("Select a changelist to add " . l:filename, 1)
     call s:Debug("chose changelist " . l:changelist)
     if l:changelist != ''
-        call s:PerforceSystem('add -c ' . l:changelist . ' ' . l:filename, l:filename)
+        call s:PerforceSystemWithFile('add -c ' . l:changelist . ' ' . l:filename, l:filename)
     endif
 endfunction
 
@@ -510,7 +505,7 @@ function! vp4#PerforceDelete(bang)
     endif
 
     if a:bang || do_delete ==? 'y'
-        call s:PerforceSystem('delete ' .filename, filename)
+        call s:PerforceSystemWithFile('delete ' .filename, filename)
         bdelete
     endif
 
@@ -548,7 +543,7 @@ function! vp4#PerforceEdit(...)
         return
     endif
 
-    let result = s:PerforceSystem('edit -c ' . l:changelist . ' ' . filename, filename)
+    let result = s:PerforceSystemWithFile('edit -c ' . l:changelist . ' ' . filename, filename)
     if result['exit_code'] == 0
         let saved_curpos = getcurpos()
         " After p4 edit, the file is writable in filesystem
@@ -596,23 +591,23 @@ function! vp4#PerforceEditFilesInQuickFixList()
     call s:Debug("chose changelist " . changelist)
 
     if changelist != ''
-        " Since files may be from different workspaces, we need to group them by workspace
+        " Since files may be from different clients, we need to group them by client
         " and edit each group separately
-        let l:by_workspace = {}
+        let l:by_client = {}
         for filename in l:unopened_files
             let l:ws = s:GetClientNameForFile(filename)
             if l:ws == ''
                 let l:ws = s:GetClientName()
             endif
-            if !has_key(l:by_workspace, l:ws)
-                let l:by_workspace[l:ws] = []
+            if !has_key(l:by_client, l:ws)
+                let l:by_client[l:ws] = []
             endif
-            call add(l:by_workspace[l:ws], filename)
+            call add(l:by_client[l:ws], filename)
         endfor
 
-        for l:ws in keys(l:by_workspace)
-            let l:files_str = join(l:by_workspace[l:ws], ' ')
-            let result = s:PerforceSystem('edit -c ' . changelist . ' ' . l:files_str, l:by_workspace[l:ws][0])
+        for [l:ws, l:files] in items(l:by_client)
+            let l:files_str = join(l:files, ' ')
+            let result = s:PerforceSystemWithClient('edit -c ' . changelist . ' ' . l:files_str, l:ws)
             if result['exit_code'] != 0
                 echow result['output']
             endif
@@ -633,7 +628,7 @@ function! vp4#PerforceRevert(bang)
     endif
 
     if a:bang || do_revert ==? 'y'
-        call s:PerforceSystem('revert ' .filename, s:ExpandPath("%:p"))
+        call s:PerforceSystemWithFile('revert ' .filename, s:ExpandPath("%:p"))
 
         if action == 'add'
             execute 'edit ' filename
@@ -665,7 +660,7 @@ function! vp4#PerforceShelve(bang)
     if cl !~# 'default'
         let perforce_command .= ' -c ' . cl
         if a:bang | let perforce_command .= ' -f' | endif
-        let msg = split(s:PerforceSystem(perforce_command . ' ' . filename, filename), '\n')
+        let msg = split(s:PerforceSystemWithFile(perforce_command . ' ' . filename, filename), '\n')
         if v:shell_error | call s:EchoError(msg[-1]) | endif
         let msg = filename . ' shelved in p4:' . cl
         echom msg
@@ -777,7 +772,7 @@ function! vp4#PerforceReopen()
         echom 'Moving ' . filename . ' to change ' . changelist
         " Perform the reopen command
         let perforce_command = 'reopen -c ' . changelist . ' ' . filename
-        silent call s:PerforceSystem(perforce_command, filename) | redraw!
+        silent call s:PerforceSystemWithFile(perforce_command, filename) | redraw!
     endif
 endfunction
 "
@@ -870,7 +865,7 @@ function! s:PerforceAnnotateFull(lbegin, lend)
         " additional calls to `p4 change`
         if !has_key(data, line)
             let data[line] = {}
-            let cl_data = split(s:PerforceSystem('change -o ' . line), '\n')
+            let cl_data = split(s:PerforceSystemWithFile('change -o ' . line), '\n')
 
             try
                 let description_index = match(cl_data, '^Description')
@@ -983,11 +978,13 @@ function! vp4#PerforceAnnotateLine()
     let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
     if !s:PerforceAssertExists(filename) | return | endif
 
+    let client_name = s:GetClientNameForFile(filename)
+
     " use -I flag to follow branch, -I implies -c
     let perforce_command = 'annotate -Iq ' . shellescape(filename, 0)
     let perforce_command .= '| sed -e "' . line(".") . 'q;d"'
     let perforce_command .= '| cut -d: -f1'
-    let changes = split(s:PerforceSystem(perforce_command), '\n')
+    let changes = split(s:PerforceSystemWithClient(perforce_command, client_name), '\n')
     if v:shell_error || len(changes) == 0
         call s:Debug('file:' . filename . 'no changes')
         return
@@ -999,7 +996,7 @@ function! vp4#PerforceAnnotateLine()
     " The change may be inherited so we include %path% here.
     let perforce_command = '-Ztag -F "change#%change% %path% %user%@%client% '
                 \ . '%time% %desc%" describe -s -m1 '
-    let output = s:PerforceSystem(perforce_command . changes[0], filename)
+    let output = s:PerforceSystemWithClient(perforce_command . changes[0], client_name)
     if v:shell_error || len(output) == 0
         call s:EchoError('file:' . filename . ' describe error')
         return
@@ -1033,7 +1030,7 @@ function! vp4#PerforceFilelog(...)
     let command = '-Mj -Ztag filelog -il ' . filename
 
     " Compile all the location list data
-    let retval = s:PerforceSystem(command, filename)
+    let retval = s:PerforceSystemWithFile(command, filename)
     if v:shell_error
         echom filename . ' ' . retval
         return
@@ -1283,7 +1280,7 @@ function! vp4#PromptForOpen()
         return
     endif
     " The file is already opened.
-    let l:text = s:PerforceSystem('-Mj -ztag opened ' . filename, filename)
+    let l:text = s:PerforceSystemWithFile('-Mj -ztag opened ' . filename, filename)
     if l:text != ''
         call s:Debug(filename . ' is already opened')
         return
@@ -1312,7 +1309,7 @@ function! s:PerforceOpenRevision()
     if !s:PerforceAssertExists(filename) | return | endif
 
     " Print the file to this buffer
-    silent call s:PerforceRead('print -q ' . shellescape(filename, 1))
+    silent call s:PerforceRead('print -q ' . shellescape(s:ExpandPath('%:p'), 1))
     setlocal nomodifiable
 
     " Use the information we remembered about the file where Filelog was invoked
