@@ -167,12 +167,15 @@ endfunction
 " Return result of calling p4 command
 function! s:PerforceSystem(cmd)
     let l:p4cmd = g:vp4_perforce_executable . " " . a:cmd
+	" Remove error output redirection to see actual error messages
 	if has('win64') || has('win32')
-		let l:p4cmd .= . " 2> NUL"
+		" Keep stderr visible on Windows
+		let l:p4cmd .= ""
 	else
 		let prev = &shell
 		set shell=sh
-		let l:p4cmd .= " 2> /dev/null"
+		" Remove 2> /dev/null to see stderr
+		let l:p4cmd .= ""
 	endif
     call s:Debug("DBG sys: " . l:p4cmd)
     let retval = system(l:p4cmd)
@@ -369,6 +372,10 @@ endfunction
 "  Perforce revision specification helpers
 " Return filename with any revision specifier stripped
 function! s:PerforceStripRevision(filename)
+    " Handle empty filename to avoid list index out of range error
+    if a:filename == ''
+        return ''
+    endif
     return split(a:filename, '#')[0]
 endfunction
 
