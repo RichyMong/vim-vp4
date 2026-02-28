@@ -526,7 +526,8 @@ function! vp4#PerforceEdit(...)
     endif
     if !s:PerforceAssertExists(filename) | return | endif
     let cl = s:PerforceGetCurrentChangelist(filename)
-    if cl != 0
+    let action = s:PerforceQuery('action', filename)
+    if cl != 0 && action != 'integrate' && action != 'branch' && action != 'move/add'
         echom filename . ' is already opened in changelist "' . cl . '"'
         if &readonly
             setlocal noreadonly
