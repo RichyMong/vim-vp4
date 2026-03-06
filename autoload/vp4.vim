@@ -439,7 +439,7 @@ function! s:PerforcePromptChangelist(prompt, with_default, ...)
         call add(changes, change)
     endfor
     if len(changes) > 0
-        if len(changes) == 1 && !a:with_default
+        if len(changes) == 1
             return changes[0]["change"]
         endif
         " Prepend with choice numbers, starting at 1
