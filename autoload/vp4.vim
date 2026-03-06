@@ -70,14 +70,20 @@ function! s:GetClientName()
     return g:_vp4_client
 endfunction
 
-" Get client name for a specific file path by guessing client
-" Returns the guessed client, or empty string if guessing fails
+" Get client name for a specific file path.
+" If g:vp4_client_for_file_cmd is set, run it with shellescape(filepath) as
+" the argument and parse the JSON response for a 'Name' field.
+" Otherwise fall back to the default client.
 function! s:GetClientNameForFile(filename)
     let filepath = expand(a:filename)
-    call s:Debug("DBG Guessing client for file: " . filepath)
+    call s:Debug("DBG Getting client for file: " . filepath)
 
-    " Use ngr to guess client by path
-    let command = 'ngr p4 client -p ' . shellescape(filepath)
+    if g:vp4_client_for_file_cmd == ''
+        call s:Debug("DBG vp4_client_for_file_cmd not set, using default client")
+        return s:GetClientName()
+    endif
+
+    let command = g:vp4_client_for_file_cmd . ' ' . shellescape(filepath)
     call s:Debug("DBG Running command: " . command)
 
     let output = system(command)
@@ -92,17 +98,17 @@ function! s:GetClientNameForFile(filename)
         try
             let dict = json_decode(output)
             if has_key(dict, 'Name')
-                call s:Debug("DBG Guessed client: " . dict['Name'])
+                call s:Debug("DBG Got client: " . dict['Name'])
                 return dict['Name']
             else
-                echom "ngr p4 client -p return with no 'Name' field"
+                echom "vp4_client_for_file_cmd returned no 'Name' field"
             endif
         catch
             call s:Debug("DBG json_decode failed: " . output)
         endtry
     endif
 
-    " Guessing failed, return empty string to fall back to current client
+    " Command failed, fall back to default client
     return s:GetClientName()
 endfunction
 
@@ -827,7 +833,7 @@ function! vp4#PerforceDiff(...)
     diffthis
 
     " Create the new window and populate it
-    execute 'leftabove vnew ' . shellescape(filename, 1)
+    execute 'leftabove vnew ' . fnameescape(filename)
     let perforce_command = 'print'
     if g:vp4_diff_suppress_header
         let perforce_command .= ' -q'
