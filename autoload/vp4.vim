@@ -834,6 +834,7 @@ function! vp4#PerforceDiff(...)
 
     " Create the new window and populate it
     execute 'leftabove vnew ' . fnameescape(filename)
+    normal! ggdG
     let perforce_command = 'print'
     if g:vp4_diff_suppress_header
         let perforce_command .= ' -q'
