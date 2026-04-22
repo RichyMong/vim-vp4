@@ -518,7 +518,12 @@ function! vp4#PerforceDelete(bang)
     endif
 
     if a:bang || do_delete ==? 'y'
-        call s:PerforceSystemWithFile('delete ' .filename, filename)
+        let l:changelist = s:PerforcePromptChangelist("Select a changelist to delete " . filename, 1)
+        call s:Debug("chose changelist " . l:changelist)
+        if l:changelist == ''
+            return
+        endif
+        call s:PerforceSystemWithFile('delete -c ' . l:changelist . ' ' . filename, filename)
         bdelete
     endif
 
