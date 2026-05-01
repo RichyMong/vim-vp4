@@ -89,7 +89,8 @@ Sections are delimited by fold markers `{{{` / `}}}`:
 | `:Vp4Edit [action]` | Open for edit; optional action: `integrate`/`branch`/`move` |
 | `:Vp4Reopen` | Move file to a different changelist |
 | `:Vp4Revert[!]` | Revert; `!` skips confirmation |
-| `:Vp4QuickfixEdit` | Open all files in quickfix list for edit |
+| `:Vp4QuickfixEdit` | Open all files in quickfix list for edit (skips already-opened incl. default) |
+| `:Vp4CoEdit` | Open all files in quickfix list for edit (same skip logic as `Vp4Edit`) |
 
 ### Exploration
 | Command | Description |
@@ -214,6 +215,14 @@ The repo has a `t/` directory (git-ignored) and a `Makefile` (git-ignored). No t
 :Vp4Diff #3       → diff vs revision #3
 ```
 
+### Vp4Diff Implementation Notes
+- The depot-side window is opened with `noautocmd` to prevent the `Vp4Enter` `BufReadCmd`
+  autocommand from firing on depot paths (e.g. `//depot/...#have`). Without `noautocmd`,
+  `CheckServerPath` would be invoked, set `nomodifiable`, and cause **E21** when the function
+  tries to clear the buffer with `ggdG`.
+- After both windows call `diffthis`, focus returns to the original file window via `wincmd p`,
+  then `gg]c` jumps to the first diff hunk automatically.
+
 ### Vp4Filelog + Vp4FilelogDiff Workflow
 1. `:Vp4Filelog` populates location list; `d` key in loclist triggers `Vp4FilelogDiff`
 2. `g:_vp4_filelog_data` stores parsed revision metadata
@@ -224,6 +233,12 @@ The repo has a `t/` directory (git-ignored) and a `Makefile` (git-ignored). No t
 
 ## Recent Changes (from git log)
 
+- `feat: add Vp4CoEdit` — Open quickfix files for edit with same skip logic as `Vp4Edit`
+  (already-opened files with action other than integrate/branch/move/add are skipped)
+- `fix: Vp4Diff use noautocmd to prevent E21` — Use `noautocmd` when opening the depot-side diff
+  window so `BufReadCmd`/`CheckServerPath` does not set `nomodifiable` before the buffer is cleared
+- `feat: Vp4Diff auto-jump to first diff hunk` — After opening the diff split, cursor returns to
+  the original file window and jumps to the first diff hunk with `gg]c`
 - `feat: allow reopen iterate as edit` — Vp4Edit can reopen with integrate/branch/move action
 - `feat: don't discard p4 error` — Error output from p4 is now preserved/shown
 - `fix: workspace commands` — Fixes for multi-workspace command execution

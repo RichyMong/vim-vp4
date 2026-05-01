@@ -591,9 +591,10 @@ function! vp4#PerforceEditFilesInQuickFixList()
 
     for filename in l:files
         if !s:PerforceAssertExists(filename) | continue | endif
-        let cl = s:PerforceGetCurrentChangelist(filename)
-        call s:Debug(filename . ' got "' . cl . '"')
-        if cl == "default" || cl != 0
+        let cl     = s:PerforceGetCurrentChangelist(filename)
+        let action = s:PerforceQuery('action', filename)
+        call s:Debug(filename . ' got "' . cl . '" action "' . action . '"')
+        if cl != 0 && action != 'integrate' && action != 'branch' && action != 'move/add'
             call s:Debug(filename . ' is already opened in changelist "' . cl . '"')
             continue
         endif
@@ -838,7 +839,10 @@ function! vp4#PerforceDiff(...)
     diffthis
 
     " Create the new window and populate it
-    execute 'leftabove vnew ' . fnameescape(filename)
+    " Use noautocmd to prevent BufReadCmd (Vp4Enter) from firing on depot
+    " paths like //depot/...#have, which would call CheckServerPath, set
+    " nomodifiable, and cause E21 when ggdG tries to clear the buffer.
+    noautocmd execute 'leftabove vnew ' . fnameescape(filename)
     normal! ggdG
     let perforce_command = 'print'
     if g:vp4_diff_suppress_header
@@ -854,6 +858,10 @@ function! vp4#PerforceDiff(...)
     execute "set filetype=" . filetype
     diffthis
     nnoremap <buffer> <silent> q :<C-U>bdelete<CR> :windo diffoff<CR>
+
+    " Jump back to the original window and move to the first diff hunk
+    wincmd p
+    normal! gg]c
 endfunction
 
 " Syntax highlighting for annotation data
