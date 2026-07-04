@@ -119,7 +119,9 @@ Sections are delimited by fold markers `{{{` / `}}}`:
 
 ### Multi-Client/Workspace Support
 - `s:GetClientName()` — Cached current client via `p4 -Mj -ztag info`
-- `s:GetClientNameForFile(filename)` — Guess client by running `ngr p4 client -p <filepath>`; returns client name or empty string on failure
+- `s:GetWorkspaceForFile(filename)` — Returns full workspace dict (`Name`, `Root`, …) for a path; uses `g:vp4_client_for_file_cmd` if set, falls back to `p4 info`
+- `vp4#GetWorkspaceForFile(filename)` — Public wrapper around the above for use outside the plugin
+- `s:GetClientNameForFile(filename)` — Thin wrapper; returns `Name` from `s:GetWorkspaceForFile`, falls back to `s:GetClientName()`
 
 ### Depot Explorer Data Structures
 ```

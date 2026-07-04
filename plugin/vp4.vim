@@ -64,6 +64,20 @@ augroup Vp4Enter
         autocmd VimEnter,BufReadCmd \(//\)\|\(#[0-9]\+\)  call vp4#CheckServerPath(expand('%'))
     endif
 augroup END
+
+augroup Vp4StatusCache
+    autocmd!
+    autocmd BufEnter,BufWritePost * call s:UpdateVp4Cache()
+augroup END
+
+function! s:UpdateVp4Cache()
+    let l:f = expand('%:p')
+    if empty(l:f) || !filereadable(l:f)
+        return
+    endif
+    let b:vp4_workspace     = vp4#GetWorkspaceForFile(l:f)
+    let b:vp4_status_summary = vp4#FileStatusSummary(l:f)
+endfunction
 " }}}
 
 " {{{ Register commands

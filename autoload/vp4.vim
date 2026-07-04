@@ -70,45 +70,62 @@ function! s:GetClientName()
     return g:_vp4_client
 endfunction
 
+" Get workspace dict for a specific file path.
+" Returns a dict with fields matching the p4 client spec (Name, Root, Owner,
+" etc.).  On failure returns {}.
+" Uses g:vp4_client_for_file_cmd if set; otherwise falls back to p4 info
+" (which reflects the current default client).
+function! s:GetWorkspaceForFile(filename)
+    let l:filepath = expand(a:filename)
+    call s:Debug("DBG GetWorkspaceForFile: " . l:filepath)
+
+    if g:vp4_client_for_file_cmd != ''
+        let l:output = system(g:vp4_client_for_file_cmd . ' ' . shellescape(l:filepath))
+        call s:Debug("DBG client_for_file exit=" . v:shell_error . " len=" . strlen(l:output))
+        if v:shell_error == 0 && l:output != ''
+            try
+                let l:dict = json_decode(l:output)
+                if has_key(l:dict, 'Name')
+                    return l:dict
+                endif
+                call s:Debug("DBG vp4_client_for_file_cmd returned no 'Name' field")
+            catch
+                call s:Debug("DBG json_decode failed: " . l:output)
+            endtry
+        endif
+    endif
+
+    " Fall back to p4 info for the default client
+    try
+        let l:info = json_decode(s:PerforceSystem('-Mj -ztag info'))
+        let l:dict = {}
+        if has_key(l:info, 'clientName')
+            let l:dict['Name'] = l:info['clientName']
+        endif
+        if has_key(l:info, 'clientRoot')
+            let l:dict['Root'] = l:info['clientRoot']
+        endif
+        return l:dict
+    catch
+    endtry
+
+    return {}
+endfunction
+
+" Public wrapper — callers outside the plugin can use vp4#GetWorkspaceForFile()
+" and pick whatever fields they need (Name, Root, Owner, …).
+function! vp4#GetWorkspaceForFile(filename)
+    return s:GetWorkspaceForFile(a:filename)
+endfunction
+
 " Get client name for a specific file path.
-" If g:vp4_client_for_file_cmd is set, run it with shellescape(filepath) as
-" the argument and parse the JSON response for a 'Name' field.
-" Otherwise fall back to the default client.
 function! s:GetClientNameForFile(filename)
-    let filepath = expand(a:filename)
-    call s:Debug("DBG Getting client for file: " . filepath)
-
-    if g:vp4_client_for_file_cmd == ''
-        call s:Debug("DBG vp4_client_for_file_cmd not set, using default client")
-        return s:GetClientName()
+    let l:ws = s:GetWorkspaceForFile(a:filename)
+    let l:name = get(l:ws, 'Name', '')
+    if l:name != ''
+        call s:Debug("DBG Got client for file: " . l:name)
+        return l:name
     endif
-
-    let command = g:vp4_client_for_file_cmd . ' ' . shellescape(filepath)
-    call s:Debug("DBG Running command: " . command)
-
-    let output = system(command)
-    let exit_code = v:shell_error
-
-    call s:Debug("DBG client guess exit_code:" . exit_code . " output_len:" . strlen(output))
-    if strlen(output) < 200
-        call s:Debug("DBG output: " . output)
-    endif
-
-    if exit_code == 0 && output != ''
-        try
-            let dict = json_decode(output)
-            if has_key(dict, 'Name')
-                call s:Debug("DBG Got client: " . dict['Name'])
-                return dict['Name']
-            else
-                echom "vp4_client_for_file_cmd returned no 'Name' field"
-            endif
-        catch
-            call s:Debug("DBG json_decode failed: " . output)
-        endtry
-    endif
-
-    " Command failed, fall back to default client
     return s:GetClientName()
 endfunction
 
@@ -152,13 +169,16 @@ endfunction
 
 " Perforce system functions with the specific client
 " Return result of calling p4 command
-function! s:PerforceSystemWithClient(cmd, client)
-    return s:PerforceSystem(" -c " . a:client . " " . a:cmd)
+function! s:PerforceSystemWithClient(cmd, client, ...)
+    let l:env = a:0 > 0 ? a:1 : ''
+    return s:PerforceSystem(" -c " . a:client . " " . a:cmd, l:env)
 endfunction
 
 " Perforce system functions with the specific file's client.
 " Return result of calling p4 command
-function! s:PerforceSystemWithFile(cmd, filepath)
+" Optional third argument: shell env prefix string, e.g. 'P4DIFF='
+function! s:PerforceSystemWithFile(cmd, filepath, ...)
+    let l:env = a:0 > 0 ? a:1 : ''
     let l:client_name = s:GetClientNameForFile(a:filepath)
     if strlen(l:client_name) > 0
         call s:Debug("DBG path:" . a:filepath . " client_name:" . l:client_name)
@@ -166,13 +186,18 @@ function! s:PerforceSystemWithFile(cmd, filepath)
         let l:client_name = s:GetClientName()
         call s:Debug("DBG path:" . a:filepath . " use default client_name:" . l:client_name)
     endif
-    return s:PerforceSystemWithClient(a:cmd, l:client_name)
+    return s:PerforceSystemWithClient(a:cmd, l:client_name, l:env)
 endfunction
 
 "  Perforce system functions
 " Return result of calling p4 command
-function! s:PerforceSystem(cmd)
-    let l:p4cmd = g:vp4_perforce_executable . " " . a:cmd
+function! s:PerforceSystem(cmd, ...)
+    let l:env = ''
+    if a:0 > 0 && type(a:1) == type({}) && !empty(a:1)
+        let l:env_dict = a:1
+        let l:env = join(map(keys(l:env_dict), {_, k -> k . '=' . shellescape(l:env_dict[k])}), ' ') . ' '
+    endif
+    let l:p4cmd = l:env . g:vp4_perforce_executable . " " . a:cmd
 	" Remove error output redirection to see actual error messages
 	if has('win64') || has('win32')
 		" Keep stderr visible on Windows
@@ -1720,5 +1745,66 @@ function! vp4#PerforceExplore(...)
 endfunction
 "
 "
+
+" {{{ Lightline integration
+
+" Return a dict summarising the Perforce status of filename.
+" Keys: action (edit/add/delete/…), changelist (CL number or 'default'),
+"       added, modified, deleted (line counts from p4 diff hunks).
+" Returns {} if the file is not opened or an error occurs.
+function! vp4#FileStatusSummary(...)
+    let l:file = expand(a:0 > 0 ? a:1 : '%:p')
+    if empty(l:file) || !filereadable(l:file)
+        return {}
+    endif
+    let l:output = s:PerforceSystemWithFile('-Mj -ztag fstat -T action,change ' . shellescape(l:file), l:file)
+    if empty(l:output)
+        return {}
+    endif
+    let l:fstat = {}
+    try
+        let l:decoded = json_decode(l:output)
+        if type(l:decoded) == type({})
+            let l:fstat = l:decoded
+        elseif type(l:decoded) == type([]) && !empty(l:decoded) && type(l:decoded[0]) == type({})
+            let l:fstat = l:decoded[0]
+        endif
+    catch
+        return {}
+    endtry
+    if !has_key(l:fstat, 'action')
+        return {}
+    endif
+    let l:action = l:fstat['action']
+    let l:cl     = get(l:fstat, 'change', 'default')
+    let l:result = {'action': l:action, 'changelist': l:cl,
+                  \ 'added': 0, 'modified': 0, 'deleted': 0}
+    if l:action ==# 'edit' || l:action ==# 'integrate'
+        let [l:hp, l:hm] = [0, 0]
+        let [l:a, l:m, l:d] = [0, 0, 0]
+        let l:diff_lines = split(s:PerforceSystemWithFile('diff -du ' . shellescape(l:file), l:file, {'P4DIFF': ''}), '\n')
+        for l:line in l:diff_lines
+            if l:line =~# '^+[^+]'
+                let l:hp += 1
+            elseif l:line =~# '^-[^-]'
+                let l:hm += 1
+            elseif l:hp > 0 || l:hm > 0
+                let l:x = min([l:hp, l:hm])
+                let l:m += l:x | let l:a += l:hp - l:x | let l:d += l:hm - l:x
+                let [l:hp, l:hm] = [0, 0]
+            endif
+        endfor
+        if l:hp > 0 || l:hm > 0
+            let l:x = min([l:hp, l:hm])
+            let l:m += l:x | let l:a += l:hp - l:x | let l:d += l:hm - l:x
+        endif
+        let l:result['added']    = l:a
+        let l:result['modified'] = l:m
+        let l:result['deleted']  = l:d
+    endif
+    return l:result
+endfunction
+
+" }}}
 
 " vim: foldenable foldmethod=marker
