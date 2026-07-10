@@ -95,7 +95,9 @@ function! s:GetWorkspaceForFile(filename)
         endif
     endif
 
-    " Fall back to p4 info for the default client
+    " Fall back to p4 info for the default client, but only if the file is
+    " actually under that workspace root (avoids showing default workspace for
+    " files that don't belong to any p4 workspace).
     try
         let l:info = json_decode(s:PerforceSystem('-Mj -ztag info'))
         let l:dict = {}
@@ -105,7 +107,9 @@ function! s:GetWorkspaceForFile(filename)
         if has_key(l:info, 'clientRoot')
             let l:dict['Root'] = l:info['clientRoot']
         endif
-        return l:dict
+        if has_key(l:dict, 'Root') && stridx(l:filepath, l:dict['Root']) == 0
+            return l:dict
+        endif
     catch
     endtry
 
