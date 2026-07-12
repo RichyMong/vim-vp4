@@ -29,10 +29,12 @@ COMMANDS                                                        *vp4-commands*
 
 ANALYSIS - Query and display information about a file.
 
-    Annotate.|Vp4Annotate|
-    Diff.....|Vp4Diff|
-    Info.....|Vp4Info|
-    Filelog..|Vp4Filelog|
+    Annotate.......|Vp4Annotate|
+    AnnotateLine...|Vp4AnnotateLine|
+    Diff...........|Vp4Diff|
+    Info...........|Vp4Info|
+    Filelog........|Vp4Filelog|
+    FilelogDiff....|Vp4FilelogDiff|
 
 CHANGE SPECIFICATION - Perform actions on changelists.
 
@@ -42,11 +44,13 @@ CHANGE SPECIFICATION - Perform actions on changelists.
 
 FILE EDITING - Perform actions on files that alter their state in Perforce.
 
-    Add......|Vp4Add|
-    Delete...|Vp4Delete|
-    Edit.....|Vp4Edit|
-    Reopen...|Vp4Reopen|
-    Revert...|Vp4Revert|
+    Add............|Vp4Add|
+    Delete.........|Vp4Delete|
+    Edit...........|Vp4Edit|
+    Reopen.........|Vp4Reopen|
+    Revert.........|Vp4Revert|
+    QuickfixEdit...|Vp4QuickfixEdit|
+    CoEdit.........|Vp4CoEdit|
 
 FILE EXPLORATION - Explore the depot
 
@@ -93,6 +97,12 @@ in diff mode.  Hit 'q' to exit.
 
     With [#{rev}] diff with revision {rev}.
 
+                                                             *Vp4AnnotateLine*
+:Vp4AnnotateLine
+Annotate a single line under the cursor.  Shows the changelist number, date,
+user, and description for that line only.  Useful for a quick lookup without
+opening the full scrollbound split.
+
                                                                      *Vp4Info*
 Call `fstat` on this file.
 
@@ -105,6 +115,16 @@ opened.  Lists in chronologically reverse order.
 Unset |g:vp4_open_loclist| to prevent the location list from being opened
 automatically.  Set |g:vp4_filelog_max| to limit the number of revisions
 listed by default.
+
+Press `d` on a location list entry to open a diff for that revision.
+
+                                                              *Vp4FilelogDiff*
+:Vp4FilelogDiff
+Show the unified diff for the revision currently selected in the location list
+populated by |Vp4Filelog|.  Opens the diff in a new tab.  `q` closes the tab
+and returns to the location list window.
+
+Equivalent to `p4 diff2 -du <file>#prev <file>#rev` for the selected revision.
 
 ------------------------------------------------------------------------------
 CHANGE SPECIFICATION
@@ -136,7 +156,19 @@ Opens current file for delete.  Unloads current buffer.  Confirms before doing
 so; use [!] to skip confirmation.
 
                                                                      *Vp4Edit*
-Opens current file for edit.
+:Vp4Edit [action]
+Opens current file for edit.  With an optional [action], reopens the file with
+the specified action: `integrate`, `branch`, or `move`.
+
+                                                             *Vp4QuickfixEdit*
+:Vp4QuickfixEdit
+Open all files in the quickfix list for edit.  Files already opened in
+Perforce with an action other than integrate/branch/move/add are skipped.
+
+                                                                   *Vp4CoEdit*
+:Vp4CoEdit
+Alias for |Vp4QuickfixEdit|.  Open all files in the quickfix list for edit
+with the same skip logic.
 
                                                                    *Vp4Reopen*
 Move the current file to a different changelist.  Lists all open changelists
@@ -186,6 +218,77 @@ specification, like `vim //main/foo/bar/baz.cpp` where:
     - if the file has been synced into the workspace, open the local file
     - otherwise, fetch the file contents from server
 
+Workspace detection                                          *vp4-workspace*
+vp4 resolves the Perforce client (workspace) for each file using the following
+logic:
+
+    1. If |g:vp4_client_for_file_cmd| is set, run it as:
+           `<cmd> <shellescape(filepath)>`
+       The command must return JSON with at least a `Name` field.
+       On success, that workspace is used.
+
+    2. Otherwise, fall back to `p4 info` (the default client), but only if
+       the file's path starts with the default client's `Root`.  This guard
+       prevents incorrectly attributing files in unrelated directories to a
+       workspace they don't belong to.
+
+    3. If neither step produces a match, `{}` is returned and vp4 commands
+       that need a client will fall back to the global default client.
+
+The public API `vp4#GetWorkspaceForFile(filepath)` exposes this logic for
+external callers (e.g. statusline plugins).
+
+Status summary and statusline integration              *vp4-status-summary*
+vp4 automatically caches per-buffer Perforce state on `BufEnter` and
+`BufWritePost` to avoid calling `p4` on every statusline refresh.
+
+Buffer-local variables set by the cache:
+
+    `b:vp4_workspace`     — workspace dict (keys: `Name`, `Root`, …);
+                            `{}` when file is not under any workspace
+    `b:vp4_status_summary`— file status dict (keys below);
+                            `{}` when file is not open for edit
+
+Keys of `b:vp4_status_summary`:
+        `action`     open action: `edit`, `add`, `delete`, `integrate`, …
+        `changelist` CL number or `'default'`
+        `added`      lines added vs depot   (edit/integrate only)
+        `modified`   lines modified vs depot
+        `deleted`    lines deleted vs depot
+
+Example: lightline / airline integration~
+
+Read from the buffer-local cache in your statusline functions so that `p4`
+is never called directly from the statusline refresh loop:
+>
+    function! VcsBranch()
+        " prefer git, fall back to p4 workspace name
+        let l:head = FugitiveHead()
+        if l:head != ''
+            return ' ' . l:head
+        endif
+        if exists('b:vp4_workspace') && has_key(b:vp4_workspace, 'Name')
+            return '⑆ ' . b:vp4_workspace['Name']
+        endif
+        return ''
+    endfunction
+
+    function! VcsStatus()
+        " prefer git (GitGutter), fall back to p4 diff counts
+        let [l:a, l:m, l:r] = GitGutterGetHunkSummary()
+        if l:a + l:m + l:r > 0
+            return printf('+%d ~%d -%d', l:a, l:m, l:r)
+        endif
+        if exists('b:vp4_status_summary') && has_key(b:vp4_status_summary, 'action')
+            let l:s = b:vp4_status_summary
+            return printf('[%s:%s] +%d ~%d -%d',
+                        \ l:s['action'], l:s['changelist'],
+                        \ l:s['added'], l:s['modified'], l:s['deleted'])
+        endif
+        return ''
+    endfunction
+<
+
 ==============================================================================
 OPTIONS                                                          *vp4-options*
 
@@ -233,6 +336,25 @@ g:vp4_base_path_replacements
                             Allows P4 paths to be replaced at command time
                             = { /home/u/bad/repo/ : /home/u/good/repo} (ex)
                             = {} (default)
+
+*g:vp4_print_suppress_header*
+                            Suppress perforce header information in file
+                            retrieved via `p4 print`.
+                            = 0
+                            = 1 (default)
+
+*g:vp4_disable_default_changelist*
+                            Disable the ability to select the default changelist
+                            when reopening a file.
+                            = 0 (default)
+                            = 1
+
+*g:vp4_client_for_file_cmd*
+                            Command used to resolve the Perforce client for a
+                            given file path.  Called as `<cmd> <shellescape(path)>`.
+                            Must return JSON containing a `Name` field.
+                            When empty, falls back to the default client.
+                            = '' (default)
 ==============================================================================
 KNOWN ISSUES                                                      *vp4-issues*
 
