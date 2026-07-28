@@ -581,6 +581,10 @@ function! vp4#PerforceEdit(...)
     let l:changelist = ''
     if a:0 >= 1
         let l:changelist = a:1
+    elseif cl != 0
+        " Already opened for integrate/branch/move/add: reopen as edit in same CL
+        echom 'Reopening ' . filename . ' as edit in changelist "' . cl . '"'
+        let l:changelist = cl
     else
         let changelist = s:PerforcePromptChangelist("Select a changelist to open " . filename, 1)
         call s:Debug("chose changelist " . changelist)
@@ -612,6 +616,7 @@ endfunction
 
 function! vp4#PerforceEditFilesInQuickFixList()
     let l:unopened_files = []
+    let l:integrate_files = []  " [filename, cl] pairs for integrate/branch/move/add
 
     let l:qflist = getqflist()
     let l:files = l:qflist->map({_,val -> fnamemodify(bufname(val.bufnr), ':p')})->sort()->uniq()
@@ -627,7 +632,19 @@ function! vp4#PerforceEditFilesInQuickFixList()
             call s:Debug(filename . ' is already opened in changelist "' . cl . '"')
             continue
         endif
-        let l:unopened_files += [filename]
+        if cl != 0
+            let l:integrate_files += [[filename, cl]]
+        else
+            let l:unopened_files += [filename]
+        endif
+    endfor
+
+    " Reopen integrate/branch/move/add files as edit in their current CL
+    for [l:fname, l:fcl] in l:integrate_files
+        let result = s:PerforceSystemWithFile('edit -c ' . l:fcl . ' ' . l:fname, l:fname)
+        if result['exit_code'] != 0
+            echow result['output']
+        endif
     endfor
 
     if len(l:unopened_files) == 0

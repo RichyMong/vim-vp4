@@ -42,6 +42,7 @@ call s:set('g:vp4_sync_options', '')
 call s:set('g:vp4_base_path_replacements', {})
 call s:set('g:vp4_disable_default_changelist', 0)
 call s:set('g:vp4_client_for_file_cmd', '')
+call s:set('g:vp4_cache_ttl', 600)
 call s:set('g:_vp4_client', '')
 call s:set('g:_vp4_loclist_winnr', 0)
 call s:set('g:_vp4_filelog_data', [])
@@ -67,7 +68,8 @@ augroup END
 
 augroup Vp4StatusCache
     autocmd!
-    autocmd BufEnter,BufWritePost * call s:UpdateVp4Cache()
+    autocmd BufEnter     * call s:UpdateVp4CacheIfStale()
+    autocmd BufWritePost * call s:UpdateVp4Cache()
 augroup END
 
 function! s:UpdateVp4Cache()
@@ -75,8 +77,15 @@ function! s:UpdateVp4Cache()
     if empty(l:f) || !filereadable(l:f)
         return
     endif
-    let b:vp4_workspace     = vp4#GetWorkspaceForFile(l:f)
+    let b:vp4_workspace      = vp4#GetWorkspaceForFile(l:f)
     let b:vp4_status_summary = vp4#FileStatusSummary(l:f)
+    let b:vp4_cache_time     = localtime()
+endfunction
+
+function! s:UpdateVp4CacheIfStale()
+    if localtime() - get(b:, 'vp4_cache_time', 0) >= g:vp4_cache_ttl
+        call s:UpdateVp4Cache()
+    endif
 endfunction
 " }}}
 
