@@ -1053,37 +1053,100 @@ function! vp4#PerforceAnnotateLine()
     if !s:PerforceAssertExists(filename) | return | endif
 
     let client_name = s:GetClientNameForFile(filename)
+    let lnum = line(".")
 
-    " use -I flag to follow branch, -I implies -c
-    let perforce_command = 'annotate -Iq ' . shellescape(filename, 0)
-    let perforce_command .= '| sed -e "' . line(".") . 'q;d"'
-    let perforce_command .= '| cut -d: -f1'
-    let changes = split(s:PerforceSystemWithClient(perforce_command, client_name), '\n')
-    if v:shell_error || len(changes) == 0
-        call s:Debug('file:' . filename . 'no changes')
+    " Walk the full integration chain via filelog -i to find all CLs that
+    " modified this file (branch actions are mechanical and skipped).
+    " This surfaces developer edits hidden behind branch/integrate hops that
+    " plain 'annotate -c' (stops at the branch CL) and 'annotate -I'
+    " (traces all the way to the original source) both miss.
+    let filelog_output = s:PerforceSystemWithClient(
+        \ 'filelog -i -m 30 ' . shellescape(filename, 0), client_name)
+    if v:shell_error || empty(filelog_output)
+        call s:EchoError('vp4 AnnotateLine: could not get filelog')
         return
     endif
 
-    call s:Debug('file:' . filename . ', change:' . changes[0])
+    " Parse filelog: collect CLs with their depot path, revision, and action.
+    " File header lines: //depot/path
+    " Revision lines:    ... #N change CL action on DATE by user@client (type)
+    let cl_info = {}
+    let cl_list = []
+    let current_path = ''
+    for fline in split(filelog_output, '\n')
+        if fline =~# '^//'
+            let current_path = matchstr(fline, '^//[^ ]*')
+            continue
+        endif
+        let m = matchlist(fline,
+            \ '^\.\.\.\s\+#\(\d\+\)\s\+change\s\+\(\d\+\)\s\+\(\w\+\)')
+        if empty(m) || empty(current_path) | continue | endif
+        let [rev, cl, action] = [m[1], m[2], m[3]]
+        if has_key(cl_info, cl) | continue | endif
+        " Skip file-level mechanical ops; edit/integrate/add pass through.
+        " Mechanical integrate CLs are filtered later by their description.
+        if action ==# 'branch' || action ==# 'delete' || action ==# 'purge'
+            continue
+        endif
+        let cl_info[cl] = {'path': current_path, 'rev': rev}
+        call add(cl_list, cl)
+    endfor
 
-    let lines = []
-    " The change may be inherited so we include %path% here.
-    let perforce_command = '-Ztag -F "change#%change% %path% %user%@%client% '
-                \ . '%time% %desc%" describe -s -m1 '
-    let output = s:PerforceSystemWithClient(perforce_command . changes[0], client_name)
-    if v:shell_error || len(output) == 0
-        call s:EchoError('file:' . filename . ' describe error')
+    " Output format: //depot/path#rev|lnum| CL [YYYY/MM/DD HH:MM:SS] user desc
+    let entries = []
+    let desc_fmt = '-Ztag -F "%change% %user% %time% %desc%" describe -s -m1 '
+    for cl in cl_list
+        if len(entries) >= 10 | break | endif
+        let output = trim(s:PerforceSystemWithClient(desc_fmt . cl, client_name))
+        if v:shell_error || empty(output) | continue | endif
+
+        " fields: [CL, user, timestamp, desc...]
+        let fields = split(output, ' ')
+        if len(fields) < 4 | continue | endif
+
+        let desc = join(fields[3:], ' ')
+        " Drop CLs whose description reveals a purely mechanical operation.
+        if desc =~# '^\(Branching from\|Populate\b\)'
+            continue
+        endif
+
+        let ts = strftime("[%Y/%m/%d %T]", fields[2])
+        let info = cl_info[cl]
+        call add(entries, {
+            \ 'filename': info.path . '#' . info.rev,
+            \ 'lnum': lnum,
+            \ 'text': fields[0] . ' ' . ts . ' ' . fields[1] . ' ' . desc
+            \ })
+    endfor
+
+    " Fallback: all filelog CLs were filtered; use annotate -I origin.
+    if empty(entries)
+        let ann_cmd = 'annotate -Iq ' . shellescape(filename, 0)
+                    \ . '| sed -n "' . lnum . 'p" | cut -d: -f1'
+        let cl = trim(s:PerforceSystemWithClient(ann_cmd, client_name))
+        if !empty(cl)
+            let output = trim(s:PerforceSystemWithClient(desc_fmt . cl, client_name))
+            if !v:shell_error && !empty(output)
+                let fields = split(output, ' ')
+                if len(fields) >= 4
+                    let ts = strftime("[%Y/%m/%d %T]", fields[2])
+                    let desc = join(fields[3:], ' ')
+                    call add(entries, {
+                        \ 'filename': filename,
+                        \ 'lnum': lnum,
+                        \ 'text': fields[0] . ' ' . ts . ' ' . fields[1] . ' ' . desc
+                        \ })
+                endif
+            endif
+        endif
+    endif
+
+    if empty(entries)
+        call s:EchoError('vp4 AnnotateLine: no annotation found for line ' . lnum)
         return
     endif
 
-    let fields = split(trim(output), ' ')
-    let fields[3] = strftime("%Y%m%d %T", fields[3])
-    let entry = { 'filename':filename, 'lnum':line("."),'text':join(fields) }
-
-    " Populate the location list
-    call setloclist(0, [entry])
-
-    " Automatically open quick-fix or location list
+    call setloclist(0, entries)
     if g:vp4_open_loclist
         lopen
     endif
