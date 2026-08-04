@@ -54,9 +54,9 @@ let s:directory_map = {}
 
 "  Helper functions
 
-" Debug helper function - only output if g:perforce_debug is true
+" Debug helper function - only output if g:vp4_debug is true
 function! s:Debug(msg)
-    if exists('g:perforce_debug') && g:perforce_debug
+    if exists('g:vp4_debug') && g:vp4_debug
         echom a:msg
     endif
 endfunction
@@ -1276,7 +1276,7 @@ function! vp4#PerforceFilelogDiff(...)
     endif
 
     " Debug output
-    if g:perforce_debug
+    if g:vp4_debug
         echom 'Using index: ' . current_idx
         echom 'Filename: ' . filename
         if has_key(entry, 'text')
@@ -1384,7 +1384,7 @@ function! s:PerforceFilelogShowDiff()
     " But we need to find the corresponding index in g:_vp4_filelog_data
     let selected_idx = current_line - 1
 
-    if g:perforce_debug
+    if g:vp4_debug
         echom 'Location list line: ' . current_line . ', index: ' . selected_idx
         echom 'Total items in filelog_data: ' . len(g:_vp4_filelog_data)
     endif
@@ -1536,25 +1536,101 @@ function! s:ExplorerPreviewOrOpen()
     endif
 endfunction
 
-" Sync or open file under cursor, non-recursive
-function! s:ExplorerSyncOrOpen(split_command)
+" Show help for explorer key mappings
+function! s:ExplorerHelp()
+    echo "Vp4Explore keybindings:\n"
+        \ . "  <CR>  toggle directory expand/collapse\n"
+        \ . "  s     sync file under cursor (skip if opened for edit)\n"
+        \ . "  S     force sync file under cursor (p4 sync -f)\n"
+        \ . "  -     go up to parent directory\n"
+        \ . "  c     change to directory under cursor\n"
+        \ . "  q     quit explorer\n"
+        \ . "  ?     show this help"
+endfunction
+
+" Batch fstat for all files in a depot directory.
+" Returns dict: base_filename -> '' (not have), '*' (have but outdated), '=' (at head)
+function! s:ExplorerFstatDir(perforce_dir)
+    let result = {}
+    let pattern = '"' . a:perforce_dir . '*"'
+    let output = s:PerforceSystem('-ztag fstat -T depotFile,haveRev,headRev ' . pattern)
+
+    let depot_file = ''
+    let have_rev = -1
+    let head_rev = -1
+
+    for line in split(output, '\n') + ['']
+        if line == ''
+            if depot_file != ''
+                let fname = split(depot_file, '/')[-1]
+                if have_rev < 0
+                    let result[fname] = ''
+                elseif have_rev == head_rev
+                    let result[fname] = '='
+                else
+                    let result[fname] = '*'
+                endif
+            endif
+            let depot_file = ''
+            let have_rev = -1
+            let head_rev = -1
+            continue
+        endif
+        let m = matchlist(line, '\.\.\. depotFile \(.*\)')
+        if !empty(m)
+            let depot_file = m[1]
+            continue
+        endif
+        let m = matchlist(line, '\.\.\. haveRev \(\d\+\)')
+        if !empty(m)
+            let have_rev = str2nr(m[1])
+            continue
+        endif
+        let m = matchlist(line, '\.\.\. headRev \(\d\+\)')
+        if !empty(m)
+            let head_rev = str2nr(m[1])
+        endif
+    endfor
+
+    return result
+endfunction
+
+" Sync file under cursor.  a:force=1 uses 'sync -f', a:force=0 skips if opened.
+function! s:ExplorerSync(force)
     if len(getline('.')) == 0 | return | endif
 
     let filename = split(getline('.'))[0]
-    let directory = s:line_map[line(".")]
-    let fullpath = directory . filename
-    let local_path = s:directory_map[directory] . s:PerforceStripRevision(filename)
-
-    " sync if necessary
-    if !filereadable(local_path)
-        let command = 'sync ' . g:vp4_sync_options . ' ' . s:PerforceStripRevision(fullpath)
-        call s:PerforceSystem(command)
+    if strpart(filename, strlen(filename) - 1, 1) == '/'
+        call s:EchoWarning('Select a file, not a directory')
+        return
     endif
 
-    " open file in new vsplit
-    exe a:split_command
-    let command  = 'edit ' . local_path
-    exe command
+    let directory = s:line_map[line('.')]
+    let fullpath = s:PerforceStripRevision(directory . filename)
+
+    if !a:force
+        let action = s:PerforceQuery('action', fullpath)
+        if action != ''
+            call s:EchoWarning(fnamemodify(fullpath, ':t') . ' is opened for ' . action . '. Use S to force sync.')
+            return
+        endif
+    endif
+
+    let cmd = 'sync' . (a:force ? ' -f' : '') . ' '
+                \ . g:vp4_sync_options . ' ' . shellescape(fullpath)
+    let output = s:PerforceSystem(cmd)
+    if v:shell_error
+        call s:EchoError(output)
+        return
+    endif
+    echo output
+
+    " Refresh file list for this directory
+    unlet s:directory_data[directory]['files']
+    let saved_curpos = getcurpos()
+    call s:ExplorerPopulate(directory)
+    call s:ExplorerRender(g:explorer_key)
+    call setpos('.', saved_curpos)
 endfunction
 
 " Change explorer root to selected directory
@@ -1572,8 +1648,7 @@ function! s:ExplorerChange()
     call setpos(".", [0, 2, 0, 0])
 endfunction
 
-" If on a directory, toggle the directory.
-" If on a file, go to that file.
+" If on a directory, toggle expand/collapse.
 function! s:ExplorerGoTo()
     if len(getline('.')) == 0 | return | endif
 
@@ -1595,9 +1670,6 @@ function! s:ExplorerGoTo()
         let saved_curpos = getcurpos()
         call s:ExplorerRender(g:explorer_key)
         call setpos('.', saved_curpos)
-    else
-        " file
-        call s:ExplorerSyncOrOpen('')
     endif
 endfunction
 
@@ -1741,7 +1813,7 @@ function! s:ExplorerPopulate(filepath)
 
         " Populate directories
         let perforce_command = 'dirs ' . pattern
-        let dirnames = split(s:PerforceSystem(perforce_command), '\n')
+        let dirnames = filter(split(s:PerforceSystem(perforce_command), '\n'), 'v:val =~ "^//" && v:val !~ "no such"')
         call map(dirnames, 'v:val . "/"')
         for dirname in dirnames
             if !has_key(s:directory_data, dirname)
@@ -1754,15 +1826,19 @@ function! s:ExplorerPopulate(filepath)
 
         " Populate files
         let perforce_command = 'files -e ' . pattern
-        let filepaths = split(s:PerforceSystem(perforce_command), '\n')
+        let filepaths = filter(split(s:PerforceSystem(perforce_command), '\n'), 'v:val =~ "^//" && v:val !~ "no such"')
         let filenames = []
+        let sync_status = s:ExplorerFstatDir(perforce_filepath)
         for filepath in filepaths
             let filename = split(split(filepath)[0], '/')[-1]
-            let local_path = s:directory_map[perforce_filepath] . s:PerforceStripRevision(filename)
-            if filereadable(local_path)
-                let flags = "*"
+            let base_name = s:PerforceStripRevision(filename)
+            let stat = get(sync_status, base_name, '')
+            if stat == '='
+                let flags = ' ='
+            elseif stat == '*'
+                let flags = ' *'
             else
-                let flags = ""
+                let flags = ''
             endif
             let obj = {
                         \'name' : filename,
@@ -1815,10 +1891,10 @@ function! vp4#PerforceExplore(...)
     nnoremap <script> <silent> <buffer> <CR> :call <sid>ExplorerGoTo()<CR>
     nnoremap <script> <silent> <buffer> -    :call <sid>ExplorerPop()<CR>
     nnoremap <script> <silent> <buffer> c    :call <sid>ExplorerChange()<CR>
-    nnoremap <script> <silent> <buffer> s    :call <sid>ExplorerSyncOrOpen('rightbelow new')<CR>
-    nnoremap <script> <silent> <buffer> v    :call <sid>ExplorerSyncOrOpen('rightbelow vnew')<CR>
-    nnoremap <script> <silent> <buffer> t    :call <sid>ExplorerSyncOrOpen('rightbelow tab new')<CR>
+    nnoremap <script> <silent> <buffer> s    :call <sid>ExplorerSync(0)<CR>
+    nnoremap <script> <silent> <buffer> S    :call <sid>ExplorerSync(1)<CR>
     nnoremap <script> <silent> <buffer> q    :quit<CR>
+    nnoremap <script> <silent> <buffer> ?    :call <sid>ExplorerHelp()<CR>
 
     " syntax
     syn match Vp4Dir /\v.*\//

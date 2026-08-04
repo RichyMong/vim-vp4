@@ -149,7 +149,7 @@ s:directory_map = { <depot_path>: <local_path> }
 | `g:vp4_annotate_revision` | `0` | Show revision# instead of CL# in annotate |
 | `g:vp4_open_loclist` | `1` | Auto-open location list after Filelog |
 | `g:vp4_filelog_max` | `10` | Max revisions shown in Filelog |
-| `g:perforce_debug` | `0` | Enable debug output via `echom` |
+| `g:vp4_debug` | `0` | Enable debug output via `echom` |
 | `g:vp4_diff_suppress_header` | `1` | Suppress diff header lines |
 | `g:vp4_print_suppress_header` | `1` | Suppress print header lines |
 | `g:vp4_allow_open_depot_file` | `1` | Allow `vim //depot/path` syntax |
@@ -194,7 +194,7 @@ Vim requirements: JSON parsing (`json_decode`), Vim 8+ or Neovim recommended.
 3. Document it in `doc/vp4.txt` under the appropriate section
 
 ### Debug Mode
-Enable with `:let g:perforce_debug = 1`. All `s:Debug(msg)` calls will print via `echom`.
+Enable with `:let g:vp4_debug = 1`. All `s:Debug(msg)` calls will print via `echom`.
 
 ### Testing
 The repo has a `t/` directory (git-ignored) and a `Makefile` (git-ignored). No test files are committed. Manual testing is the primary approach.

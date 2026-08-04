@@ -5,7 +5,7 @@
 
 " {{{ Initialization
 if exists('g:loaded_vp4') || !executable('p4') || &cp
-    if exists('g:perforce_debug') && !g:perforce_debug
+    if exists('g:vp4_debug') && !g:vp4_debug
         finish
     endif
 endif
@@ -32,7 +32,7 @@ call s:set('g:vp4_prompt_on_write', 1)
 call s:set('g:vp4_annotate_revision', 0)
 call s:set('g:vp4_open_loclist', 1)
 call s:set('g:vp4_filelog_max', 10)
-call s:set('g:perforce_debug', 0)
+call s:set('g:vp4_debug', 0)
 call s:set('g:vp4_diff_suppress_header', 1)
 call s:set('g:vp4_print_suppress_header', 1)
 call s:set('g:_vp4_curpos', [0, 0, 0, 0])
