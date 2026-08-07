@@ -1120,7 +1120,8 @@ function! vp4#PerforceAnnotateLine()
 
     " annotate -cq at #have: p4 annotate on a local path defaults to HEAD,
     " not #have, so line numbers won't match the file on disk without #have.
-    let ann_cmd = 'annotate -cq ' . shellescape(filename . '#have', 0)
+    let ann_flags = g:vp4_annotate_ignore_whitespace ? '-cq -db' : '-cq'
+    let ann_cmd = 'annotate ' . ann_flags . ' ' . shellescape(filename . '#have', 0)
                 \ . ' | sed -n "' . have_lnum . 'p" | cut -d: -f1'
     let cl = trim(s:PerforceSystemWithClient(ann_cmd, client_name))
 
@@ -1136,7 +1137,8 @@ function! vp4#PerforceAnnotateLine()
     if !v:shell_error && !empty(flog)
         let action = matchstr(flog, 'change\s\+' . cl . '\s\+\zs\w\+')
         if action ==# 'branch' || action ==# 'integrate'
-            let icmd = 'annotate -cIq ' . shellescape(filename . '#have', 0)
+            let icmd = 'annotate -cIq' . (g:vp4_annotate_ignore_whitespace ? ' -db' : '') . ' '
+                     \ . shellescape(filename . '#have', 0)
                      \ . ' | sed -n "' . have_lnum . 'p" | cut -d: -f1'
             let icl = trim(s:PerforceSystemWithClient(icmd, client_name))
             if !empty(icl) && icl =~# '^\d\+$'
