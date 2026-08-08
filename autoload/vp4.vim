@@ -63,9 +63,16 @@ endfunction
 
 function! s:GetClientName()
     if g:_vp4_client == ''
+        if !executable(g:vp4_perforce_executable)
+            return ''
+        endif
         let l:text = s:PerforceSystem('-Mj -ztag info')
-        let l:dict = json_decode(l:text)
-        let g:_vp4_client = l:dict["clientName"]
+        try
+            let l:dict = json_decode(l:text)
+            let g:_vp4_client = get(l:dict, 'clientName', '')
+        catch
+            call s:Debug("DBG GetClientName json_decode failed: " . l:text)
+        endtry
     endif
     return g:_vp4_client
 endfunction
