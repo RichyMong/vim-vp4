@@ -31,6 +31,7 @@ ANALYSIS - Query and display information about a file.
 
     Annotate.......|Vp4Annotate|
     AnnotateLine...|Vp4AnnotateLine|
+    AnnotateLineDiff|Vp4AnnotateLineDiff|
     Diff...........|Vp4Diff|
     Info...........|Vp4Info|
     Filelog........|Vp4Filelog|
@@ -102,6 +103,13 @@ in diff mode.  Hit 'q' to exit.
 Annotate a single line under the cursor.  Shows the changelist number, date,
 user, and description for that line only.  Useful for a quick lookup without
 opening the full scrollbound split.
+
+Press `d` in the location list to open a diff for the annotated changelist,
+comparing that revision against the previous one (same as |Vp4FilelogDiff|).
+
+                                                         *Vp4AnnotateLineDiff*
+:Vp4AnnotateLineDiff
+Show the diff for the changelist last surfaced by |Vp4AnnotateLine|.
 
                                                                      *Vp4Info*
 Call `fstat` on this file.

@@ -1166,11 +1166,138 @@ function! vp4#PerforceAnnotateLine()
     let ts = strftime("[%Y/%m/%d %T]", fields[2])
     let desc = join(fields[3:], ' ')
 
-    let entries = [{'filename': filename, 'lnum': lnum,
-        \ 'text': fields[0] . ' ' . ts . ' ' . fields[1] . ' ' . desc}]
+    let entry_text = fields[0] . ' ' . ts . ' ' . fields[1] . ' ' . desc
+    let entries = [{'filename': filename, 'lnum': lnum, 'text': entry_text}]
+    let g:_vp4_annotate_data = {'filename': filename, 'cl': cl,
+        \ 'client': client_name, 'text': entry_text, 'have_lnum': have_lnum}
     call setloclist(0, entries)
     if g:vp4_open_loclist
         lopen
+        nnoremap <buffer> <silent> d :<C-U>call vp4#PerforceAnnotateLineDiff()<CR>
+    endif
+endfunction
+
+" Show the diff for the changelist surfaced by Vp4AnnotateLine
+function! vp4#PerforceAnnotateLineDiff()
+    if !exists('g:_vp4_annotate_data') || empty(g:_vp4_annotate_data)
+        call s:EchoError('No annotate data. Run :Vp4AnnotateLine first')
+        return
+    endif
+
+    let filename    = g:_vp4_annotate_data['filename']
+    let cl          = g:_vp4_annotate_data['cl']
+    let client_name = g:_vp4_annotate_data['client']
+    let entry_text  = g:_vp4_annotate_data['text']
+    let have_lnum   = g:_vp4_annotate_data['have_lnum']
+
+    " Find depot path and revision at the changelist
+    let files_out = s:PerforceSystemWithClient(
+        \ 'files ' . shellescape(filename . '@' . cl, 0), client_name)
+    if v:shell_error || empty(files_out)
+        call s:EchoError('vp4 AnnotateLineDiff: cannot get file info at CL ' . cl)
+        return
+    endif
+
+    let depot_path = matchstr(files_out, '^//.\{-\}\ze#')
+    let rev = str2nr(matchstr(files_out, '#\zs\d\+'))
+
+    if empty(depot_path) || rev == 0
+        call s:EchoError('vp4 AnnotateLineDiff: cannot parse revision from: ' . files_out)
+        return
+    endif
+
+    if rev <= 1
+        call s:EchoWarning('vp4 AnnotateLineDiff: revision #' . rev . ' has no previous revision')
+        return
+    endif
+
+    " Map have_lnum (in #have) → rev_lnum (in #rev) via diff2 #rev #have.
+    " MapLocalLineToHave treats #rev as 'old' and #have as 'new', so it maps
+    " a line in #have back to the corresponding line in #rev.
+    let rev_lnum = have_lnum
+    let map_diff = s:PerforceSystemWithClient(
+        \ 'diff2 -du ' . shellescape(depot_path . '#' . rev, 0)
+        \ . ' ' . shellescape(depot_path . '#have', 0), client_name)
+    call s:Debug('DBG AnnotateLineDiff: have_lnum=' . have_lnum . ' rev=' . rev . ' depot=' . depot_path)
+    if !v:shell_error && map_diff =~# '@@'
+        let mapped = s:MapLocalLineToHave(split(map_diff, "\n"), have_lnum)
+        call s:Debug('DBG AnnotateLineDiff: MapLocalLineToHave => ' . mapped)
+        if mapped > 0
+            let rev_lnum = mapped
+        endif
+    endif
+    call s:Debug('DBG AnnotateLineDiff: rev_lnum=' . rev_lnum)
+
+    let prev_file = depot_path . '#' . (rev - 1)
+    let curr_file = depot_path . '#' . rev
+
+    let g:_vp4_diff_return_tabpage = tabpagenr()
+    let g:_vp4_diff_return_winnr = winnr()
+
+    tabnew
+    setlocal modifiable
+
+    call append(0, ['# Perforce Diff for ' . depot_path,
+        \ '# Comparing revision #' . (rev - 1) . ' -> #' . rev . '  (CL ' . cl . ')',
+        \ '# ' . entry_text,
+        \ ''])
+
+    silent call s:PerforceRead('diff2 -du '
+        \ . shellescape(prev_file, 1) . ' ' . shellescape(curr_file, 1))
+
+    setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile
+    setlocal filetype=diff
+    setlocal nomodifiable
+
+    " Jump to the hunk in #rev that contains rev_lnum
+    call s:JumpToHunk(rev_lnum)
+
+    nnoremap <buffer> <silent> q :<C-U>call <SID>PerforceFilelogDiffClose()<CR>
+endfunction
+
+" Jump to the exact line within the diff hunk whose '+' range contains a:rev_lnum.
+function! s:JumpToHunk(rev_lnum)
+    normal! gg
+    let last_hunk = 0
+    while search('^@@', 'W')
+        let hunk_line = line('.')
+        let m = matchlist(getline('.'), '^@@ -\d\+\(,\d\+\)\? +\(\d\+\)\(,\(\d\+\)\)\? @@')
+        if !empty(m)
+            let new_start = str2nr(m[2])
+            let new_count = empty(m[4]) ? 1 : str2nr(m[4])
+            if new_start > a:rev_lnum
+                " Overshot — stay on previous hunk or top
+                if last_hunk > 0 | execute last_hunk | endif
+                return
+            endif
+            if a:rev_lnum < new_start + max([new_count, 1])
+                " Found the right hunk; walk its body to find the exact line
+                let buf_lnum = hunk_line + 1
+                let cur_new = new_start
+                let last_line = line('$')
+                while buf_lnum <= last_line
+                    let ch = getline(buf_lnum)[0]
+                    if ch ==# '@' | break | endif
+                    if ch ==# ' ' || ch ==# '+'
+                        if cur_new == a:rev_lnum
+                            execute buf_lnum
+                            return
+                        endif
+                        let cur_new += 1
+                    endif
+                    let buf_lnum += 1
+                endwhile
+                execute hunk_line
+                return
+            endif
+            let last_hunk = hunk_line
+        endif
+    endwhile
+    " Fallback: last hunk
+    if last_hunk > 0
+        execute last_hunk
+    else
+        normal! gg
     endif
 endfunction
 
