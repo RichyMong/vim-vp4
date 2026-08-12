@@ -71,6 +71,7 @@ augroup Vp4StatusCache
     autocmd!
     autocmd BufEnter     * call s:UpdateVp4CacheIfStale()
     autocmd BufWritePost * call s:UpdateVp4Cache()
+    autocmd User Vp4Changed call s:UpdateVp4Cache()
 augroup END
 
 function! s:UpdateVp4Cache()

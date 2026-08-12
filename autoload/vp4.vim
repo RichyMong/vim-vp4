@@ -540,6 +540,7 @@ function! vp4#PerforceAdd()
     call s:Debug("chose changelist " . l:changelist)
     if l:changelist != ''
         call s:PerforceSystemWithFile('add -c ' . l:changelist . ' ' . l:filename, l:filename)
+        silent doautocmd User Vp4Changed
     endif
 endfunction
 
@@ -616,6 +617,7 @@ function! vp4#PerforceEdit(...)
         " Reload the file to ensure consistent state
         execute 'edit! ' . filename
         call setpos('.', saved_curpos)
+        silent doautocmd User Vp4Changed
     else
         echow result['output']
     endif
@@ -717,6 +719,7 @@ function! vp4#PerforceRevert(bang)
             setlocal nomodifiable
             setlocal readonly
         endif
+        silent doautocmd User Vp4Changed
     endif
 endfunction
 "
