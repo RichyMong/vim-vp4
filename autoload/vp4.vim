@@ -660,7 +660,7 @@ function! vp4#PerforceEditFilesInQuickFixList()
         return
     endif
 
-    call s:Debug('unopened files"' . l:unopened_files . '"')
+    call s:Debug('unopened files"' . join(l:unopened_files, ', ') . '"')
 
     let changelist = s:PerforcePromptChangelist("Select a changelist to open the files", 1)
     call s:Debug("chose changelist " . changelist)
