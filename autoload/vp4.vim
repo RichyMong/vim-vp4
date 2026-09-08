@@ -1308,7 +1308,12 @@ endfunction
     " Only lists the files and some changelist data. The file is not retrieved
     " until the user opens it.
 function! vp4#PerforceFilelog(...)
-    let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
+    " Check if buffer has vp4_file_depot_path variable set
+    if exists('b:vp4_file_depot_path')
+        let filename = b:vp4_file_depot_path
+    else
+        let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
+    endif
     if !s:PerforceAssertExists(filename) | return | endif
 
     " Remember some stuff about this file

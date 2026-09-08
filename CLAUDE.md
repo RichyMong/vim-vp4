@@ -45,6 +45,7 @@ vim-vp4/
 | `s:FunctionName()` | Script-local (private) helper function |
 | `g:vp4_*` | User-configurable global option |
 | `g:_vp4_*` | Internal plugin state (not for user modification) |
+| `b:vp4_*` | Buffer-scoped variable for external program integration |
 
 ### Code Organization in `autoload/vp4.vim`
 
@@ -173,6 +174,13 @@ s:directory_map = { <depot_path>: <local_path> }
 - `g:_vp4_filelog_data` — Filelog revision data array
 - `g:_vp4_diff_return_tabpage` / `g:_vp4_diff_return_winnr` — Diff navigation state
 
+### Buffer Variables
+Buffer-scoped variables can be set by external programs to influence plugin behavior:
+
+| Variable | Type | Purpose |
+|----------|------|---------|
+| `b:vp4_file_depot_path` | String | When set, `:Vp4Filelog` queries this depot path instead of deriving it from the current file. Enables cross-workspace/stream filelog queries. Example: `let b:vp4_file_depot_path = '//Publish/path/file.cpp'` |
+
 ---
 
 ## External Dependencies
@@ -231,10 +239,18 @@ The repo has a `t/` directory (git-ignored) and a `Makefile` (git-ignored). No t
 3. `Vp4FilelogDiff` runs `p4 diff2 -du <file>#prev <file>#rev` and renders in a new tab
 4. `q` in the diff tab closes it and returns to the loclist window
 
+**Cross-Workspace Support:**
+- When `b:vp4_file_depot_path` is set, `:Vp4Filelog` uses that depot path instead of deriving from the current file
+- This allows querying filelogs for files in other perforce branches/streams without switching workspaces
+- Useful for external tools that set this variable to enable interactive filelog queries on temporary files
+
 ---
 
 ## Recent Changes (from git log)
 
+- `feat: cross-workspace Filelog via buffer variable` — `:Vp4Filelog` now checks for `b:vp4_file_depot_path`
+  and uses it to query filelogs across perforce branches/streams independent of current workspace.
+  Allows external tools (e.g. `ngr p4 print`) to set this variable for seamless cross-workspace queries.
 - `feat: add Vp4CoEdit` — Open quickfix files for edit with same skip logic as `Vp4Edit`
   (already-opened files with action other than integrate/branch/move/add are skipped)
 - `fix: Vp4Diff use noautocmd to prevent E21` — Use `noautocmd` when opening the depot-side diff

@@ -126,6 +126,17 @@ listed by default.
 
 Press `d` on a location list entry to open a diff for that revision.
 
+CROSS-WORKSPACE FILELOG SUPPORT
+When the buffer variable |b:vp4_file_depot_path| is set, :Vp4Filelog will
+query the filelog for that depot path instead of deriving it from the current
+file's path.  This is useful when viewing files from different perforce branches
+or streams that your workspace is not currently synced to.
+
+Example: When viewing a temporary file with the depot path set in a buffer
+variable (e.g., //Publish/Server/Source/game.cpp), calling :Vp4Filelog will
+show the filelog for that depot path, even if your workspace is on a different
+stream like //Trunk.
+
                                                               *Vp4FilelogDiff*
 :Vp4FilelogDiff
 Show the unified diff for the revision currently selected in the location list
@@ -363,6 +374,18 @@ g:vp4_base_path_replacements
                             Must return JSON containing a `Name` field.
                             When empty, falls back to the default client.
                             = '' (default)
+
+==============================================================================
+BUFFER VARIABLES                                          *vp4-buffer-variables*
+
+*b:vp4_file_depot_path*     When set, |Vp4Filelog| will use this depot path
+                            instead of deriving the path from the current file.
+                            This allows querying the filelog for files in
+                            different perforce streams or branches that your
+                            workspace is not currently synced to.
+
+                            Example: `let b:vp4_file_depot_path = '//Publish/path/file.cpp'`
+
 ==============================================================================
 KNOWN ISSUES                                                      *vp4-issues*
 
