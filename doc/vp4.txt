@@ -99,10 +99,22 @@ in diff mode.  Hit 'q' to exit.
     With [#{rev}] diff with revision {rev}.
 
                                                              *Vp4AnnotateLine*
-:Vp4AnnotateLine
+:Vp4AnnotateLine [0|1]
 Annotate a single line under the cursor.  Shows the changelist number, date,
 user, and description for that line only.  Useful for a quick lookup without
 opening the full scrollbound split.
+
+With [1] force the cross-branch trace for this call; with [0] disable it.
+Without an argument the behaviour follows |g:vp4_annotate_cross_branch|.
+
+When the line is owned by a bot (see |g:vp4_annotate_bot_users|), it follows
+the source stream across branches — branch/copy/move and merge — by matching
+the line content, until it reaches a non-bot changelist.  The location list
+then shows the trace chain: the first entry is the direct annotate changelist,
+and each subsequent hop is indented with `└─`.  Each entry is formatted as
+`depot#rev|CL|author|time|description`.  When the chain cannot be
+followed any further, the `Origin:` user is shown as a fallback.  Set
+|g:vp4_annotate_cross_branch| to 0 to disable this by default.
 
 Press `d` in the location list to open a diff for the annotated changelist,
 comparing that revision against the previous one (same as |Vp4FilelogDiff|).
@@ -119,6 +131,8 @@ Call `fstat` on this file.
 Populate the quick-fix or location list with the past [n] or default revisions
 of this file.  The file is not actually retrieved from the server until it is
 opened.  Lists in chronologically reverse order.
+
+Each entry shows `CL|author|time|action|description`.
 
 Unset |g:vp4_open_loclist| to prevent the location list from being opened
 automatically.  Set |g:vp4_filelog_max| to limit the number of revisions
@@ -374,6 +388,22 @@ g:vp4_base_path_replacements
                             Must return JSON containing a `Name` field.
                             When empty, falls back to the default client.
                             = '' (default)
+
+*g:vp4_annotate_cross_branch*
+                            Follow bot-owned lines across branch/copy/move/
+                            merge sources when running |Vp4AnnotateLine|, so
+                            the reported changelist is the one that originally
+                            added the line instead of the bot changelist.
+                            = 0
+                            = 1 (default)
+
+*g:vp4_annotate_bot_users*
+                            List of Perforce user names treated as bots during
+                            |Vp4AnnotateLine| cross-branch tracing.  When a
+                            line is owned by one of these users, vp4 follows
+                            the source stream or the changelist's `Origin:`
+                            user to find the original author.
+                            = ['NGRBuild', 'NGRAutoMerge'] (default)
 
 ==============================================================================
 BUFFER VARIABLES                                          *vp4-buffer-variables*

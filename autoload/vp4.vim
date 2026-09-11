@@ -1104,7 +1104,92 @@ function! s:MapLocalLineToHave(diff_lines, lnum)
     return result
 endfunction
 
-function! vp4#PerforceAnnotateLine()
+" Parse the output of `p4 describe -s <cl>` for cross-branch tracing.
+" Returns a dict with:
+"   user        - the changelist owner (from 'by X@client')
+"   origin_user - the human from "Origin: {'user': 'xxx'}" ('' if none)
+"   src_stream  - the source stream from "Branching/Copy/Merge from //src"
+function! s:AnnotateDescribe(cl, client)
+    let out = s:PerforceSystemWithClient('describe -s -m1 ' . a:cl, a:client)
+    let result = {'user': '', 'origin_user': '', 'src_stream': ''}
+    if v:shell_error || empty(out)
+        return result
+    endif
+    let result.user = matchstr(out, ' by \zs[^@\s]\+')
+    let result.origin_user = matchstr(out, "Origin:.\\{-}'user':\\s*'\\zs[^']\\+")
+    let result.src_stream = matchstr(out, '\c\(Branching\|Copy\|Merge\) from \zs//[^@, \t]\+')
+    return result
+endfunction
+
+" Remap a depot file path from one stream to another.  The stream is the 5th
+" path segment (index 4, since the leading // yields two empty segments), e.g.
+" //NGR_Project/Dev/Trunk_S3/Server/... -> //NGR_Project/Dev/1.6_Trunk/Server/...
+function! s:AnnotateRemapStream(depot_file, src_stream)
+    let parts = split(a:depot_file, '/', 1)
+    if len(parts) >= 5
+        let parts[4] = split(a:src_stream, '/', 1)[-1]
+        return join(parts, '/')
+    endif
+    return a:depot_file
+endfunction
+
+" Resolve the depot path of a local/depot file (strips the trailing #rev).
+function! s:AnnotateDepotPath(file, client)
+    let out = s:PerforceSystemWithClient('files ' . shellescape(a:file, 0), a:client)
+    if v:shell_error || empty(out)
+        return ''
+    endif
+    return matchstr(out, '^//.\{-\}\ze#')
+endfunction
+
+" Find every annotate line whose content exactly matches a:content.
+" Returns a list of [cl, lnum] pairs; empty when nothing matches.
+function! s:AnnotateFindContent(ann_out, content)
+    let result = []
+    let lnum = 0
+    for line in split(a:ann_out, "\n")
+        let lnum += 1
+        let m = matchlist(line, '^\(\d\+\): \(.*\)$')
+        if !empty(m) && m[2] ==# a:content
+            call add(result, [m[1], lnum])
+        endif
+    endfor
+    return result
+endfunction
+
+" Define highlight groups for vp4's location-list text (idempotent).
+" Uses explicit 256-color values so the Solarized-dark terminal theme's ANSI
+" remapping doesn't turn the named colors (Yellow/Green) dark.
+function! s:SetupVp4Highlight()
+    highlight default Vp4CL     ctermfg=226 guifg=#ffff00
+    highlight default Vp4Author ctermfg=120 guifg=#87ff87
+    highlight default Vp4Action ctermfg=87  guifg=#5fdfff
+    highlight default Vp4Sep    ctermfg=250 guifg=#bcbcbc
+endfunction
+
+" Highlight the location-list text added by Vp4Filelog
+" (text: CL|time|author|action|desc, after the loclist's `filename|lnum|`).
+" Uses matchadd() because it outranks the qf syntax's `qfText` item, which
+" otherwise swallows the whole text region (a syntax match with \zs loses).
+function! s:FilelogSyntax()
+    call clearmatches()
+    call matchadd('Vp4CL', '^\([^|]*|\)\{2}\zs[^|]*\ze|', 10)
+    call matchadd('Vp4Author', '^\([^|]*|\)\{3}\zs[^|]*\ze|', 10)
+endfunction
+
+" Highlight the location-list text added by Vp4AnnotateLine
+" (text: [└─ ]depot#rev|CL|time|author|desc).
+function! s:AnnotateSyntax()
+    call clearmatches()
+    call matchadd('Vp4CL', '^\([^|]*|\)\{3}\zs[^|]*\ze|', 10)
+    call matchadd('Vp4Author', '^\([^|]*|\)\{4}\zs[^|]*\ze|', 10)
+endfunction
+
+function! vp4#PerforceAnnotateLine(...)
+    " Optional arg: 1 = force cross-branch tracing, 0 = disable it for this
+    " call.  Defaults to g:vp4_annotate_cross_branch when omitted.
+    let cross = a:0 > 0 ? (a:1 ==# '0' ? 0 : 1) : g:vp4_annotate_cross_branch
+
     let filename = s:PerforceStripRevision(s:ExpandPath('%:p'))
     if !s:PerforceAssertExists(filename) | return | endif
 
@@ -1132,50 +1217,115 @@ function! vp4#PerforceAnnotateLine()
     " not #have, so line numbers won't match the file on disk without #have.
     let ann_flags = g:vp4_annotate_ignore_whitespace ? '-cq -db' : '-cq'
     let ann_cmd = 'annotate ' . ann_flags . ' ' . shellescape(filename . '#have', 0)
-                \ . ' | sed -n "' . have_lnum . 'p" | cut -d: -f1'
-    let cl = trim(s:PerforceSystemWithClient(ann_cmd, client_name))
+                \ . ' | sed -n "' . have_lnum . 'p"'
+    let ann_line = trim(s:PerforceSystemWithClient(ann_cmd, client_name))
+    let cl = matchstr(ann_line, '^\zs\d\+')
+    let target_content = matchstr(ann_line, '^\d\+: \zs.*$')
 
     if empty(cl) || cl !~# '^\d\+$'
         call s:EchoError('vp4 AnnotateLine: no annotation for line ' . lnum)
         return
     endif
 
-    " If this CL is a branch/integrate action, follow the integration chain
-    " to surface the developer's original edit (annotate -I traces one hop).
-    let flog = s:PerforceSystemWithClient(
-        \ 'filelog -m 30 ' . shellescape(filename, 0), client_name)
-    if !v:shell_error && !empty(flog)
-        let action = matchstr(flog, 'change\s\+' . cl . '\s\+\zs\w\+')
-        if action ==# 'branch' || action ==# 'integrate'
-            let icmd = 'annotate -cIq' . (g:vp4_annotate_ignore_whitespace ? ' -db' : '') . ' '
-                     \ . shellescape(filename . '#have', 0)
-                     \ . ' | sed -n "' . have_lnum . 'p" | cut -d: -f1'
-            let icl = trim(s:PerforceSystemWithClient(icmd, client_name))
-            if !empty(icl) && icl =~# '^\d\+$'
-                let cl = icl
-            endif
+    " Cross-branch walk (aligned with blame_across_branches): while the line
+    " is owned by a bot, follow the source stream / Origin from the changelist
+    " description until we reach a human or run out of source to follow.
+    let depot_path = ''
+    let ref_rev = '#have'
+    let ref_lnum = have_lnum
+    let cur_depot = s:AnnotateDepotPath(filename, client_name)
+    " Trace chain: each hop records {cl, depot, origin}.  The first entry is
+    " the direct annotate result; later entries are the sources it was traced
+    " through.
+    let chain = [{'cl': cl, 'depot': cur_depot, 'origin': ''}]
+    let depth = 0
+    while cross && depth < 30 && !empty(cur_depot)
+        let desc = s:AnnotateDescribe(cl, client_name)
+        if empty(desc.user) || index(g:vp4_annotate_bot_users, desc.user) < 0
+            break
         endif
-    endif
+        " Bot CL: follow the source stream to the original changelist.  The
+        " Origin user is only a fallback when we cannot follow any further.
+        if empty(desc.src_stream)
+            if !empty(desc.origin_user)
+                        \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
+                let chain[-1].origin = desc.origin_user
+            endif
+            break
+        endif
+        let src = s:AnnotateRemapStream(cur_depot, desc.src_stream)
+        if empty(src)
+            break
+        endif
+        let ann_out = s:PerforceSystemWithClient(
+            \ 'annotate -cq ' . shellescape(src, 0), client_name)
+        if v:shell_error || empty(ann_out)
+            break
+        endif
+        let found = s:AnnotateFindContent(ann_out, target_content)
+        if len(found) != 1
+            if !empty(desc.origin_user)
+                        \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
+                let chain[-1].origin = desc.origin_user
+            endif
+            break
+        endif
+        let cl = found[0][0]
+        let ref_lnum = found[0][1]
+        let depot_path = src
+        let ref_rev = '#head'
+        let cur_depot = src
+        call add(chain, {'cl': cl, 'depot': src, 'origin': ''})
+        let depth += 1
+    endwhile
 
     let desc_fmt = '-Ztag -F "%change% %user% %time% %desc%" describe -s -m1 '
-    let output = trim(s:PerforceSystemWithClient(desc_fmt . cl, client_name))
-    if v:shell_error || empty(output)
+    let entries = []
+    let entry_text = ''
+    for [hop, layer] in items(chain)
+        let output = trim(s:PerforceSystemWithClient(desc_fmt . layer.cl, client_name))
+        if v:shell_error || empty(output)
+            continue
+        endif
+        " The description may span lines (e.g. a merge's `Origin:` block); keep
+        " only the first line so the entry stays compact.
+        let fields = split(split(output, "\n")[0], ' ')
+        if len(fields) < 4
+            continue
+        endif
+        let ts = strftime("%Y/%m/%d %T", fields[2])
+        let entry_user = !empty(layer.origin) ? layer.origin : fields[1]
+        let desc = substitute(join(fields[3:], ' '), '\\n', ' ', 'g')
+        " Resolve the file revision at this changelist in its own depot.
+        let files_out = s:PerforceSystemWithClient(
+            \ 'files ' . shellescape(layer.depot . '@' . layer.cl, 0), client_name)
+        let rev = str2nr(matchstr(files_out, '#\zs\d\+'))
+        let rev_ref = rev > 0 ? layer.depot . '#' . rev : layer.depot
+        " Clean text (last hop wins) is reused for the diff header.
+        let entry_text = rev_ref . '|' . fields[0] . '|' . entry_user
+                    \ . '|' . ts . '|' . desc
+        if hop == 0
+            call add(entries, {'filename': filename, 'lnum': lnum, 'text': entry_text})
+        else
+            let text = '  └─ ' . entry_text
+            if !empty(layer.origin)
+                let text .= '  (origin)'
+            endif
+            call add(entries, {'filename': filename, 'lnum': lnum, 'text': text})
+        endif
+    endfor
+    if empty(entries)
         call s:EchoError('vp4 AnnotateLine: could not describe CL ' . cl)
         return
     endif
-
-    let fields = split(output, ' ')
-    if len(fields) < 4 | return | endif
-    let ts = strftime("[%Y/%m/%d %T]", fields[2])
-    let desc = join(fields[3:], ' ')
-
-    let entry_text = fields[0] . ' ' . ts . ' ' . fields[1] . ' ' . desc
-    let entries = [{'filename': filename, 'lnum': lnum, 'text': entry_text}]
     let g:_vp4_annotate_data = {'filename': filename, 'cl': cl,
-        \ 'client': client_name, 'text': entry_text, 'have_lnum': have_lnum}
+        \ 'client': client_name, 'text': entry_text,
+        \ 'depot_path': depot_path, 'ref_rev': ref_rev, 'ref_lnum': ref_lnum}
     call setloclist(0, entries)
     if g:vp4_open_loclist
         lopen
+        call s:SetupVp4Highlight()
+        call s:AnnotateSyntax()
         nnoremap <buffer> <silent> d :<C-U>call vp4#PerforceAnnotateLineDiff()<CR>
     endif
 endfunction
@@ -1191,17 +1341,23 @@ function! vp4#PerforceAnnotateLineDiff()
     let cl          = g:_vp4_annotate_data['cl']
     let client_name = g:_vp4_annotate_data['client']
     let entry_text  = g:_vp4_annotate_data['text']
-    let have_lnum   = g:_vp4_annotate_data['have_lnum']
+    let ref_lnum    = get(g:_vp4_annotate_data, 'ref_lnum', 0)
+    let ref_rev     = get(g:_vp4_annotate_data, 'ref_rev', '#have')
+    let depot_path  = get(g:_vp4_annotate_data, 'depot_path', '')
 
-    " Find depot path and revision at the changelist
+    " Resolve depot path + revision at the changelist.  When the annotate
+    " traced across branches, depot_path already holds the source path;
+    " otherwise derive it from the original local file.
+    let query_path = empty(depot_path) ? filename : depot_path
     let files_out = s:PerforceSystemWithClient(
-        \ 'files ' . shellescape(filename . '@' . cl, 0), client_name)
+        \ 'files ' . shellescape(query_path . '@' . cl, 0), client_name)
     if v:shell_error || empty(files_out)
         call s:EchoError('vp4 AnnotateLineDiff: cannot get file info at CL ' . cl)
         return
     endif
-
-    let depot_path = matchstr(files_out, '^//.\{-\}\ze#')
+    if empty(depot_path)
+        let depot_path = matchstr(files_out, '^//.\{-\}\ze#')
+    endif
     let rev = str2nr(matchstr(files_out, '#\zs\d\+'))
 
     if empty(depot_path) || rev == 0
@@ -1214,16 +1370,16 @@ function! vp4#PerforceAnnotateLineDiff()
         return
     endif
 
-    " Map have_lnum (in #have) → rev_lnum (in #rev) via diff2 #rev #have.
-    " MapLocalLineToHave treats #rev as 'old' and #have as 'new', so it maps
-    " a line in #have back to the corresponding line in #rev.
-    let rev_lnum = have_lnum
+    " Map ref_lnum (in ref_rev) → rev_lnum (in #rev) via diff2 #rev <ref_rev>.
+    " MapLocalLineToHave treats #rev as 'old' and ref_rev as 'new', so it maps
+    " a line in ref_rev back to the corresponding line in #rev.
+    let rev_lnum = ref_lnum
     let map_diff = s:PerforceSystemWithClient(
         \ 'diff2 -du ' . shellescape(depot_path . '#' . rev, 0)
-        \ . ' ' . shellescape(depot_path . '#have', 0), client_name)
-    call s:Debug('DBG AnnotateLineDiff: have_lnum=' . have_lnum . ' rev=' . rev . ' depot=' . depot_path)
+        \ . ' ' . shellescape(depot_path . ref_rev, 0), client_name)
+    call s:Debug('DBG AnnotateLineDiff: ref_lnum=' . ref_lnum . ' rev=' . rev . ' depot=' . depot_path)
     if !v:shell_error && map_diff =~# '@@'
-        let mapped = s:MapLocalLineToHave(split(map_diff, "\n"), have_lnum)
+        let mapped = s:MapLocalLineToHave(split(map_diff, "\n"), ref_lnum)
         call s:Debug('DBG AnnotateLineDiff: MapLocalLineToHave => ' . mapped)
         if mapped > 0
             let rev_lnum = mapped
@@ -1349,14 +1505,14 @@ function! vp4#PerforceFilelog(...)
             let change = dict['change' . i]
             let desc = trim(dict['desc' . i])
             let client = dict['client' . i]
-            let time = strftime("[%Y/%m/%d %T]", dict['time' . i])
+            let time = strftime("%Y/%m/%d %T", dict['time' . i])
             let rev = dict['rev' . i]
             " Set up dictionary entry
             let entry = {}
             let full_filename = depotFile . '#' . rev
             let entry['filename'] = full_filename
             let entry['lnum'] = g:_vp4_curpos[1]
-            let entry['text'] = printf("%s %s %s %s %s", change, dict[action], time, user, desc)
+            let entry['text'] = printf("%s|%s|%s|%s|%s", change, user, time, dict[action], desc)
             " Add it to the list
             call add(data, entry)
             " Also save the filename separately for later retrieval
@@ -1373,6 +1529,8 @@ function! vp4#PerforceFilelog(...)
         " Save the window that has the location list
         let g:_vp4_loclist_winnr = winnr()
         lopen
+        call s:SetupVp4Highlight()
+        call s:FilelogSyntax()
         " Add key mapping for showing diff in location list window
         nnoremap <buffer> <silent> d :<C-U>call <SID>PerforceFilelogShowDiff()<CR>
     endif
