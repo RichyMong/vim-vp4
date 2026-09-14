@@ -1105,11 +1105,17 @@ function! s:MapLocalLineToHave(diff_lines, lnum)
 endfunction
 
 " Parse the output of `p4 describe -s <cl>` for cross-branch tracing.
+" Two known AutoMerge description formats:
+"   Format A: [AutoMerge]... Merge from //src to //dst, changelist: NNNN.
+"             OringinInfo:{'stream': '//...', 'user': 'xxx', ...}
+"   Format B: [AutoMerge]
+"             SourceCL: NNNN / SourceStream：//...  (note: full-width colon)
+"             OriginUser: xxx / OriginStream: //...
 " Returns a dict with:
 "   user        - the changelist owner (from 'by X@client')
-"   origin_user - the human from "Ori(n)ginInfo: {'user': 'xxx'}" ('' if none)
-"   src_stream  - the source stream from "Branching/Copy/Merge from //src"
-"   src_cl      - the source changelist from "changelist: NNNN"
+"   origin_user - the original human author
+"   src_stream  - the direct source stream
+"   src_cl      - the direct source changelist
 function! s:AnnotateDescribe(cl, client)
     let out = s:PerforceSystemWithClient('describe -s -m1 ' . a:cl, a:client)
     let result = {'user': '', 'origin_user': '', 'src_stream': '', 'src_cl': ''}
@@ -1117,9 +1123,31 @@ function! s:AnnotateDescribe(cl, client)
         return result
     endif
     let result.user = matchstr(out, ' by \zs[^@\s]\+')
-    let result.origin_user = matchstr(out, "Ori\\%(ngin\\|gin\\)Info:.\\{-}'user':\\s*'\\zs[^']\\+")
-    let result.src_stream = matchstr(out, '\c\(Branching\|Copy\|Merge\) from \zs//[^@, \t]\+')
-    let result.src_cl = matchstr(out, '\cchangelist:\s*\zs\d\+')
+
+    " src_cl: SourceCL > changelist: > OriginCL
+    let result.src_cl = matchstr(out, 'SourceCL:\s*\zs\d\+')
+    if empty(result.src_cl)
+        let result.src_cl = matchstr(out, '\cchangelist:\s*\zs\d\+')
+    endif
+    if empty(result.src_cl)
+        let result.src_cl = matchstr(out, 'OriginCL:\s*\zs\d\+')
+    endif
+
+    " src_stream: SourceStream > Merge from > OriginStream
+    let result.src_stream = matchstr(out, 'SourceStream[：:]\s*\zs//\S\+')
+    if empty(result.src_stream)
+        let result.src_stream = matchstr(out, '\c\(Branching\|Copy\|Merge\) from \zs//[^@, \t]\+')
+    endif
+    if empty(result.src_stream)
+        let result.src_stream = matchstr(out, 'OriginStream:\s*\zs//\S\+')
+    endif
+
+    " origin_user: OriginUser > Ori(n)ginInfo 'user' field
+    let result.origin_user = matchstr(out, 'OriginUser:\s*\zs\S\+')
+    if empty(result.origin_user)
+        let result.origin_user = matchstr(out, "Ori\\%(ngin\\|gin\\)Info:.\\{-}'user':\\s*'\\zs[^']\\+")
+    endif
+
     return result
 endfunction
 
