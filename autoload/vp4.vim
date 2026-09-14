@@ -1107,17 +1107,19 @@ endfunction
 " Parse the output of `p4 describe -s <cl>` for cross-branch tracing.
 " Returns a dict with:
 "   user        - the changelist owner (from 'by X@client')
-"   origin_user - the human from "Origin: {'user': 'xxx'}" ('' if none)
+"   origin_user - the human from "OringinInfo: {'user': 'xxx'}" ('' if none)
 "   src_stream  - the source stream from "Branching/Copy/Merge from //src"
+"   src_cl      - the source changelist from "changelist: NNNN"
 function! s:AnnotateDescribe(cl, client)
     let out = s:PerforceSystemWithClient('describe -s -m1 ' . a:cl, a:client)
-    let result = {'user': '', 'origin_user': '', 'src_stream': ''}
+    let result = {'user': '', 'origin_user': '', 'src_stream': '', 'src_cl': ''}
     if v:shell_error || empty(out)
         return result
     endif
     let result.user = matchstr(out, ' by \zs[^@\s]\+')
-    let result.origin_user = matchstr(out, "Origin:.\\{-}'user':\\s*'\\zs[^']\\+")
+    let result.origin_user = matchstr(out, "Ori\\%(ngin\\|gin\\)Info:.\\{-}'user':\\s*'\\zs[^']\\+")
     let result.src_stream = matchstr(out, '\c\(Branching\|Copy\|Merge\) from \zs//[^@, \t]\+')
+    let result.src_cl = matchstr(out, '\cchangelist:\s*\zs\d\+')
     return result
 endfunction
 
@@ -1239,44 +1241,38 @@ function! vp4#PerforceAnnotateLine(...)
     " through.
     let chain = [{'cl': cl, 'depot': cur_depot, 'origin': ''}]
     let depth = 0
-    while cross && depth < 30 && !empty(cur_depot)
+    while cross && depth < 30
         let desc = s:AnnotateDescribe(cl, client_name)
+        call s:Debug('DBG cross[' . depth . '] cl=' . cl . ' user=' . desc.user
+            \ . ' src_stream=' . desc.src_stream . ' src_cl=' . desc.src_cl
+            \ . ' origin_user=' . desc.origin_user)
         if empty(desc.user) || index(g:vp4_annotate_bot_users, desc.user) < 0
+            call s:Debug('DBG cross[' . depth . '] break: user not bot')
             break
         endif
-        " Bot CL: follow the source stream to the original changelist.  The
-        " Origin user is only a fallback when we cannot follow any further.
-        if empty(desc.src_stream)
-            if !empty(desc.origin_user)
-                        \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
-                let chain[-1].origin = desc.origin_user
+        " Bot CL: follow the source changelist directly.
+        if !empty(desc.src_cl) && !empty(desc.src_stream)
+            let src = s:AnnotateRemapStream(cur_depot, desc.src_stream)
+            call s:Debug('DBG cross[' . depth . '] follow src_cl=' . desc.src_cl
+                \ . ' remapped: ' . src)
+            if !empty(src)
+                let cl = desc.src_cl
+                let depot_path = src
+                let cur_depot = src
+                let ref_rev = '#head'
+                call add(chain, {'cl': cl, 'depot': src, 'origin': ''})
+                let depth += 1
+                continue
             endif
-            break
         endif
-        let src = s:AnnotateRemapStream(cur_depot, desc.src_stream)
-        if empty(src)
-            break
+        " Cannot follow CL chain; use origin_user as fallback.
+        if !empty(desc.origin_user)
+                    \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
+            let chain[-1].origin = desc.origin_user
         endif
-        let ann_out = s:PerforceSystemWithClient(
-            \ 'annotate -cq ' . shellescape(src, 0), client_name)
-        if v:shell_error || empty(ann_out)
-            break
-        endif
-        let found = s:AnnotateFindContent(ann_out, target_content)
-        if len(found) != 1
-            if !empty(desc.origin_user)
-                        \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
-                let chain[-1].origin = desc.origin_user
-            endif
-            break
-        endif
-        let cl = found[0][0]
-        let ref_lnum = found[0][1]
-        let depot_path = src
-        let ref_rev = '#head'
-        let cur_depot = src
-        call add(chain, {'cl': cl, 'depot': src, 'origin': ''})
-        let depth += 1
+        call s:Debug('DBG cross[' . depth . '] break: no src_cl/src_stream'
+            \ . (empty(desc.origin_user) ? '' : ', origin_user=' . desc.origin_user))
+        break
     endwhile
 
     let desc_fmt = '-Ztag -F "%change% %user% %time% %desc%" describe -s -m1 '
@@ -1297,8 +1293,10 @@ function! vp4#PerforceAnnotateLine(...)
         let entry_user = !empty(layer.origin) ? layer.origin : fields[1]
         let desc = substitute(join(fields[3:], ' '), '\\n', ' ', 'g')
         " Resolve the file revision at this changelist in its own depot.
-        let files_out = s:PerforceSystemWithClient(
-            \ 'files ' . shellescape(layer.depot . '@' . layer.cl, 0), client_name)
+        let files_out = (hop > 0)
+            \ ? s:PerforceSystem('files ' . shellescape(layer.depot . '@' . layer.cl, 0))
+            \ : s:PerforceSystemWithClient(
+            \     'files ' . shellescape(layer.depot . '@' . layer.cl, 0), client_name)
         let rev = str2nr(matchstr(files_out, '#\zs\d\+'))
         let rev_ref = rev > 0 ? layer.depot . '#' . rev : layer.depot
         " Clean text (last hop wins) is reused for the diff header.
@@ -1349,8 +1347,11 @@ function! vp4#PerforceAnnotateLineDiff()
     " traced across branches, depot_path already holds the source path;
     " otherwise derive it from the original local file.
     let query_path = empty(depot_path) ? filename : depot_path
-    let files_out = s:PerforceSystemWithClient(
-        \ 'files ' . shellescape(query_path . '@' . cl, 0), client_name)
+    let is_cross = !empty(depot_path)
+    let files_out = is_cross
+        \ ? s:PerforceSystem('files ' . shellescape(query_path . '@' . cl, 0))
+        \ : s:PerforceSystemWithClient(
+        \     'files ' . shellescape(query_path . '@' . cl, 0), client_name)
     if v:shell_error || empty(files_out)
         call s:EchoError('vp4 AnnotateLineDiff: cannot get file info at CL ' . cl)
         return
@@ -1374,9 +1375,12 @@ function! vp4#PerforceAnnotateLineDiff()
     " MapLocalLineToHave treats #rev as 'old' and ref_rev as 'new', so it maps
     " a line in ref_rev back to the corresponding line in #rev.
     let rev_lnum = ref_lnum
-    let map_diff = s:PerforceSystemWithClient(
-        \ 'diff2 -du ' . shellescape(depot_path . '#' . rev, 0)
-        \ . ' ' . shellescape(depot_path . ref_rev, 0), client_name)
+    let map_diff = is_cross
+        \ ? s:PerforceSystem('diff2 -du ' . shellescape(depot_path . '#' . rev, 0)
+        \     . ' ' . shellescape(depot_path . ref_rev, 0))
+        \ : s:PerforceSystemWithClient(
+        \     'diff2 -du ' . shellescape(depot_path . '#' . rev, 0)
+        \     . ' ' . shellescape(depot_path . ref_rev, 0), client_name)
     call s:Debug('DBG AnnotateLineDiff: ref_lnum=' . ref_lnum . ' rev=' . rev . ' depot=' . depot_path)
     if !v:shell_error && map_diff =~# '@@'
         let mapped = s:MapLocalLineToHave(split(map_diff, "\n"), ref_lnum)
