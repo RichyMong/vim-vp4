@@ -1107,7 +1107,7 @@ endfunction
 " Parse the output of `p4 describe -s <cl>` for cross-branch tracing.
 " Returns a dict with:
 "   user        - the changelist owner (from 'by X@client')
-"   origin_user - the human from "OringinInfo: {'user': 'xxx'}" ('' if none)
+"   origin_user - the human from "Ori(n)ginInfo: {'user': 'xxx'}" ('' if none)
 "   src_stream  - the source stream from "Branching/Copy/Merge from //src"
 "   src_cl      - the source changelist from "changelist: NNNN"
 function! s:AnnotateDescribe(cl, client)
