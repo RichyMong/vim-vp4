@@ -1104,63 +1104,28 @@ function! s:MapLocalLineToHave(diff_lines, lnum)
     return result
 endfunction
 
-" Parse the output of `p4 describe -s <cl>` for cross-branch tracing.
-" Two known AutoMerge description formats:
-"   Format A: [AutoMerge]... Merge from //src to //dst, changelist: NNNN.
-"             OringinInfo:{'stream': '//...', 'user': 'xxx', ...}
-"   Format B: [AutoMerge]
-"             SourceCL: NNNN / SourceStream：//...  (note: full-width colon)
-"             OriginUser: xxx / OriginStream: //...
-" Returns a dict with:
-"   user        - the changelist owner (from 'by X@client')
-"   origin_user - the original human author
-"   src_stream  - the direct source stream
-"   src_cl      - the direct source changelist
-function! s:AnnotateDescribe(cl, client)
-    let out = s:PerforceSystemWithClient('describe -s -m1 ' . a:cl, a:client)
-    let result = {'user': '', 'origin_user': '', 'src_stream': '', 'src_cl': ''}
+" Parse `p4 filelog -m1 depot#rev` to find integration source.
+" Returns {'action': 'integrate|branch|edit|add', 'from_path': '//...', 'from_rev': N}
+function! s:FilelogGetSource(depot_path, rev)
+    let out = s:PerforceSystem(
+        \ 'filelog -m1 ' . shellescape(a:depot_path . '#' . a:rev, 0))
+    let result = {'action': '', 'from_path': '', 'from_rev': 0}
     if v:shell_error || empty(out)
         return result
     endif
-    let result.user = matchstr(out, ' by \zs[^@\s]\+')
-
-    " src_cl: SourceCL > changelist: > OriginCL
-    let result.src_cl = matchstr(out, 'SourceCL:\s*\zs\d\+')
-    if empty(result.src_cl)
-        let result.src_cl = matchstr(out, '\cchangelist:\s*\zs\d\+')
-    endif
-    if empty(result.src_cl)
-        let result.src_cl = matchstr(out, 'OriginCL:\s*\zs\d\+')
-    endif
-
-    " src_stream: SourceStream > Merge from > OriginStream
-    let result.src_stream = matchstr(out, 'SourceStream[：:]\s*\zs//\S\+')
-    if empty(result.src_stream)
-        let result.src_stream = matchstr(out, '\c\(Branching\|Copy\|Merge\) from \zs//[^@, \t]\+')
-    endif
-    if empty(result.src_stream)
-        let result.src_stream = matchstr(out, 'OriginStream:\s*\zs//\S\+')
-    endif
-
-    " origin_user: OriginUser > Ori(n)ginInfo 'user' field
-    let result.origin_user = matchstr(out, 'OriginUser:\s*\zs\S\+')
-    if empty(result.origin_user)
-        let result.origin_user = matchstr(out, "Ori\\%(ngin\\|gin\\)Info:.\\{-}'user':\\s*'\\zs[^']\\+")
-    endif
-
+    for line in split(out, "\n")
+        if empty(result.action) && line =~# '^\.\.\. #'
+            let result.action = matchstr(line, '^\.\.\. #\d\+ change \d\+ \zs\w\+')
+        elseif empty(result.from_path)
+                    \ && line =~# '^\.\.\. \.\.\. \(copy\|branch\|merge\) from'
+            let spec = matchstr(line,
+                \ '^\.\.\. \.\.\. \(copy\|branch\|merge\) from \zs//.\+$')
+            let result.from_path = matchstr(spec, '^//.\{-\}\ze#')
+            " Handle revision ranges like #1,#16 — take the last revision.
+            let result.from_rev = str2nr(matchstr(spec, '#\zs\d\+$'))
+        endif
+    endfor
     return result
-endfunction
-
-" Remap a depot file path from one stream to another.  The stream is the 5th
-" path segment (index 4, since the leading // yields two empty segments), e.g.
-" //NGR_Project/Dev/Trunk_S3/Server/... -> //NGR_Project/Dev/1.6_Trunk/Server/...
-function! s:AnnotateRemapStream(depot_file, src_stream)
-    let parts = split(a:depot_file, '/', 1)
-    if len(parts) >= 5
-        let parts[4] = split(a:src_stream, '/', 1)[-1]
-        return join(parts, '/')
-    endif
-    return a:depot_file
 endfunction
 
 " Resolve the depot path of a local/depot file (strips the trailing #rev).
@@ -1257,50 +1222,78 @@ function! vp4#PerforceAnnotateLine(...)
         return
     endif
 
-    " Cross-branch walk (aligned with blame_across_branches): while the line
-    " is owned by a bot, follow the source stream / Origin from the changelist
-    " description until we reach a human or run out of source to follow.
+    " Cross-branch walk: use p4 filelog to follow integration sources, then
+    " p4 annotate on the source file to find the per-line CL.
     let depot_path = ''
     let ref_rev = '#have'
     let ref_lnum = have_lnum
     let cur_depot = s:AnnotateDepotPath(filename, client_name)
-    " Trace chain: each hop records {cl, depot, origin}.  The first entry is
-    " the direct annotate result; later entries are the sources it was traced
-    " through.
-    let chain = [{'cl': cl, 'depot': cur_depot, 'origin': ''}]
+    let chain = [{'cl': cl, 'depot': cur_depot}]
     let depth = 0
     while cross && depth < 30
-        let desc = s:AnnotateDescribe(cl, client_name)
-        call s:Debug('DBG cross[' . depth . '] cl=' . cl . ' user=' . desc.user
-            \ . ' src_stream=' . desc.src_stream . ' src_cl=' . desc.src_cl
-            \ . ' origin_user=' . desc.origin_user)
-        if empty(desc.user) || index(g:vp4_annotate_bot_users, desc.user) < 0
-            call s:Debug('DBG cross[' . depth . '] break: user not bot')
+        " Get the file revision at this CL.
+        let files_out = (depth == 0)
+            \ ? s:PerforceSystemWithClient(
+            \     'files ' . shellescape(cur_depot . '@' . cl, 0), client_name)
+            \ : s:PerforceSystem(
+            \     'files ' . shellescape(cur_depot . '@' . cl, 0))
+        let rev = str2nr(matchstr(files_out, '#\zs\d\+'))
+        if rev == 0
+            call s:Debug('DBG cross[' . depth . '] break: cannot get revision')
             break
         endif
-        " Bot CL: follow the source changelist directly.
-        if !empty(desc.src_cl) && !empty(desc.src_stream)
-            let src = s:AnnotateRemapStream(cur_depot, desc.src_stream)
-            call s:Debug('DBG cross[' . depth . '] follow src_cl=' . desc.src_cl
-                \ . ' remapped: ' . src)
-            if !empty(src)
-                let cl = desc.src_cl
-                let depot_path = src
-                let cur_depot = src
-                let ref_rev = '#head'
-                call add(chain, {'cl': cl, 'depot': src, 'origin': ''})
-                let depth += 1
-                continue
-            endif
+
+        " Check filelog for integration source.
+        let src = s:FilelogGetSource(cur_depot, rev)
+        call s:Debug('DBG cross[' . depth . '] cl=' . cl . ' #' . rev
+            \ . ' action=' . src.action
+            \ . ' from=' . src.from_path . '#' . src.from_rev)
+        if src.action !=# 'integrate' && src.action !=# 'branch'
+            break
         endif
-        " Cannot follow CL chain; use origin_user as fallback.
-        if !empty(desc.origin_user)
-                    \ && index(g:vp4_annotate_bot_users, desc.origin_user) < 0
-            let chain[-1].origin = desc.origin_user
+        if empty(src.from_path) || src.from_rev == 0
+            call s:Debug('DBG cross[' . depth . '] break: no source in filelog')
+            break
         endif
-        call s:Debug('DBG cross[' . depth . '] break: no src_cl/src_stream'
-            \ . (empty(desc.origin_user) ? '' : ', origin_user=' . desc.origin_user))
-        break
+
+        " Annotate source file to find per-line CL.
+        let ann_out = s:PerforceSystem(
+            \ 'annotate -cq ' . shellescape(
+            \     src.from_path . '#' . src.from_rev, 0))
+        if v:shell_error || empty(ann_out)
+            call s:Debug('DBG cross[' . depth . '] break: annotate failed')
+            break
+        endif
+        let found = s:AnnotateFindContent(ann_out, target_content)
+        call s:Debug('DBG cross[' . depth . '] found=' . len(found)
+            \ . ' ref_lnum=' . ref_lnum)
+        if empty(found)
+            call s:Debug('DBG cross[' . depth . '] break: no content match')
+            break
+        endif
+
+        " Disambiguate multiple matches by picking the closest to ref_lnum.
+        let best = found[0]
+        if len(found) > 1
+            let best_dist = abs(best[1] - ref_lnum)
+            for f in found[1:]
+                let dist = abs(f[1] - ref_lnum)
+                if dist < best_dist
+                    let best = f
+                    let best_dist = dist
+                endif
+            endfor
+            call s:Debug('DBG cross[' . depth . '] picked lnum='
+                \ . best[1] . ' (dist=' . best_dist . ')')
+        endif
+
+        let cl = best[0]
+        let ref_lnum = best[1]
+        let depot_path = src.from_path
+        let ref_rev = '#' . src.from_rev
+        let cur_depot = src.from_path
+        call add(chain, {'cl': cl, 'depot': src.from_path})
+        let depth += 1
     endwhile
 
     let desc_fmt = '-Ztag -F "%change% %user% %time% %desc%" describe -s -m1 '
@@ -1311,15 +1304,23 @@ function! vp4#PerforceAnnotateLine(...)
         if v:shell_error || empty(output)
             continue
         endif
-        " The description may span lines (e.g. a merge's `Origin:` block); keep
-        " only the first line so the entry stays compact.
-        let fields = split(split(output, "\n")[0], ' ')
+        " The first line has: change user time desc...
+        " For multi-line descriptions, join OriginDesc if the first-line desc is
+        " just a short tag like [AutoMerge].
+        let lines = split(output, "\n")
+        let fields = split(lines[0], ' ')
         if len(fields) < 4
             continue
         endif
         let ts = strftime("%Y/%m/%d %T", fields[2])
-        let entry_user = !empty(layer.origin) ? layer.origin : fields[1]
+        let entry_user = fields[1]
         let desc = substitute(join(fields[3:], ' '), '\\n', ' ', 'g')
+        if desc =~# '^\[.\{-}\]$'
+            let origin_desc = matchstr(output, 'OriginDesc:\s*\zs.\+')
+            if !empty(origin_desc)
+                let desc .= ' ' . origin_desc
+            endif
+        endif
         " Resolve the file revision at this changelist in its own depot.
         let files_out = (hop > 0)
             \ ? s:PerforceSystem('files ' . shellescape(layer.depot . '@' . layer.cl, 0))
@@ -1333,11 +1334,8 @@ function! vp4#PerforceAnnotateLine(...)
         if hop == 0
             call add(entries, {'filename': filename, 'lnum': lnum, 'text': entry_text})
         else
-            let text = '  └─ ' . entry_text
-            if !empty(layer.origin)
-                let text .= '  (origin)'
-            endif
-            call add(entries, {'filename': filename, 'lnum': lnum, 'text': text})
+            call add(entries, {'filename': filename, 'lnum': lnum,
+                \ 'text': '  └─ ' . entry_text})
         endif
     endfor
     if empty(entries)
