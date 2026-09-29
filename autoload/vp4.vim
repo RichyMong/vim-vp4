@@ -911,7 +911,11 @@ function! vp4#PerforceDiff(...)
     setlocal buftype=nofile bufhidden=wipe nobuflisted noswapfile nowrap
     setlocal nomodifiable
     setlocal nomodified
-    execute "set filetype=" . filetype
+    " Use the local file's filetype as syntax only. A scratch diff buffer must
+    " not be marked as a real source file: setting 'filetype' would make
+    " filetype-aware plugins (e.g. YouCompleteMe) treat this '#have' buffer as
+    " a cpp file and leak it into their per-project open-file state.
+    execute "setlocal syntax=" . filetype
     diffthis
     nnoremap <buffer> <silent> q :<C-U>bdelete<CR> :windo diffoff<CR>
 
@@ -1794,8 +1798,10 @@ function! s:PerforceOpenRevision()
     silent call s:PerforceRead('print -q ' . shellescape(s:ExpandPath('%:p'), 1))
     setlocal nomodifiable
 
-    " Use the information we remembered about the file where Filelog was invoked
-    execute 'setlocal filetype=' . g:_vp4_filetype
+    " Use the information we remembered about the file where Filelog was
+    " invoked. Apply it as syntax only (see vp4#PerforceDiff) so this scratch
+    " buffer is not marked as a real source file.
+    execute 'setlocal syntax=' . g:_vp4_filetype
     execute g:_vp4_curpos[1]
 
 endfunction
