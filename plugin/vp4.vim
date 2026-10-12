@@ -73,6 +73,8 @@ augroup Vp4StatusCache
     autocmd BufEnter     * call s:UpdateVp4CacheIfStale()
     autocmd BufWritePost * call s:UpdateVp4Cache()
     autocmd User Vp4Changed call s:UpdateVp4Cache()
+    autocmd FocusGained  * call s:UpdateVp4Cache()
+    autocmd CursorHold,CursorHoldI * call s:UpdateVp4CacheIfStale()
 augroup END
 
 function! s:UpdateVp4Cache()
@@ -111,6 +113,7 @@ command! -bang Vp4Shelve call vp4#PerforceShelve(<bang>0)
 command! Vp4Describe call vp4#PerforceDescribe()
 command! -nargs=+ Vp4 call vp4#PerforceSystemWr(<f-args>)
 command! Vp4Info call vp4#PerforceSystemWr('fstat ' . expand('%'))
+command! Vp4StatusRefresh call s:UpdateVp4Cache()
 command! -nargs=? Vp4Explore call vp4#PerforceExplore(<f-args>)
 " }}}
 

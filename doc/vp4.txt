@@ -36,6 +36,7 @@ ANALYSIS - Query and display information about a file.
     Info...........|Vp4Info|
     Filelog........|Vp4Filelog|
     FilelogDiff....|Vp4FilelogDiff|
+    StatusRefresh..|Vp4StatusRefresh|
 
 CHANGE SPECIFICATION - Perform actions on changelists.
 
@@ -125,6 +126,13 @@ Show the diff for the changelist last surfaced by |Vp4AnnotateLine|.
 
                                                                      *Vp4Info*
 Call `fstat` on this file.
+
+                                                            *Vp4StatusRefresh*
+:Vp4StatusRefresh
+Force an immediate refresh of the |vp4-status-summary| cache for the current
+buffer, bypassing |g:vp4_cache_ttl|.  Useful when Perforce state changed
+outside of this Vim session (e.g. a `p4 submit` run from another shell) and
+you don't want to wait for the next automatic refresh.
 
                                                                   *Vp4Filelog*
 :Vp4Filelog [n]
@@ -272,8 +280,19 @@ The public API `vp4#GetWorkspaceForFile(filepath)` exposes this logic for
 external callers (e.g. statusline plugins).
 
 Status summary and statusline integration              *vp4-status-summary*
-vp4 automatically caches per-buffer Perforce state on `BufEnter` and
-`BufWritePost` to avoid calling `p4` on every statusline refresh.
+vp4 automatically caches per-buffer Perforce state to avoid calling `p4` on
+every statusline refresh.  The cache is refreshed:
+
+    * On `BufEnter`, if older than |g:vp4_cache_ttl|
+    * On `BufWritePost` (unconditionally), to pick up on-disk diff changes
+      after every save
+    * On `User Vp4Changed` (unconditionally), fired internally after
+      |Vp4Edit|, |Vp4Add|, |Vp4Revert|, etc.
+    * On `FocusGained` (unconditionally), to pick up state changed by `p4`
+      commands run outside this Vim session while it was unfocused
+    * On `CursorHold` / `CursorHoldI`, if older than |g:vp4_cache_ttl|
+
+Call |Vp4StatusRefresh| to force a refresh immediately, bypassing the TTL.
 
 Buffer-local variables set by the cache:
 

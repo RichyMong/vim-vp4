@@ -74,6 +74,7 @@ Sections are delimited by fold markers `{{{` / `}}}`:
 | `:Vp4Filelog [max]` | Populate location list with file revision history |
 | `:Vp4FilelogDiff` | Show unified diff for selected revision in filelog |
 | `:Vp4Info` | Show `p4 fstat` for current file |
+| `:Vp4StatusRefresh` | Force immediate refresh of the status-summary cache, bypassing `g:vp4_cache_ttl` |
 
 ### Change Specification
 | Command | Description |
@@ -158,6 +159,7 @@ s:directory_map = { <depot_path>: <local_path> }
 | `g:vp4_base_path_replacements` | `{}` | Dict of local path substitution rules |
 | `g:vp4_disable_default_changelist` | `0` | Disable selecting default CL |
 | `g:vp4_client_for_file_cmd` | `''` | Command to resolve client by filepath; called as `<cmd> <shellescape(path)>`, must return JSON with a `'Name'` field; if empty, falls back to default client |
+| `g:vp4_cache_ttl` | `600` | Seconds before the per-buffer status cache (`b:vp4_workspace`/`b:vp4_status_summary`) is considered stale on `BufEnter`/`CursorHold` |
 
 ### Explorer Options (`autoload/vp4.vim`)
 | Variable | Default | Description |
